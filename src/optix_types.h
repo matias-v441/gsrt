@@ -1,9 +1,8 @@
 struct Params {
     const float3* ray_origins;
     const float3* ray_directions;
-    unsigned int* num_hits;
-    unsigned int* hit_ids;
-    float* hit_distances;
+    float3* radiance;
+    float* transmittance;
     OptixTraversableHandle handle;
 };
 

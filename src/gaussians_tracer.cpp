@@ -7,6 +7,7 @@
 #include <cassert>
 #include <iostream>
 #include <iomanip>
+#include <cstring>
 
 #include "optix_types.h"
 #include "utils/exception.h"
@@ -355,9 +356,6 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
                                    float *transmittance
                                    ) {
     CUDA_CHECK(cudaSetDevice(device));
-    float2 *triangle_barycentric_coordinates;
-    unsigned int *shared_visited_triangles;
-    float *triangle_hit_distances;
 
     // TODO: we can reuse the triangle memory
     // No need to allocate again here
@@ -369,6 +367,8 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.handle = gaussians_structure->gas_handle();
         params.ray_origins = ray_origins;
         params.ray_directions = ray_directions;
+        params.radiance = radiance;
+        params.transmittance = transmittance;
 
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),
@@ -421,16 +421,18 @@ GaussiansAS::~GaussiansAS() noexcept(false) {
 }
 
 namespace icosahedron{
+    //constexpr float x = 1.f;
+    //constexpr float y = (1.0 + sqrt(5.0)) / 2.0;
     constexpr float x = sqrt(.4f*(5.f+sqrt(5.f))) *.5f;
     constexpr float y = x*(1.f+sqrt(5.f))*.5f;
     constexpr int n_verts = 12;
     constexpr int n_faces = 20;
-    float3 vertices[12] = {
+    float3 vertices[n_verts] = {
         make_float3(-x,y,0.f),make_float3(x,y,0.f),make_float3(-x,-y,0.f),make_float3(x,-y,0.f),
         make_float3(0.f,-x,y),make_float3(0.f,x,y),make_float3(0.f,-x,-y),make_float3(0.f,x,-y),
         make_float3(y,0.f,-x),make_float3(y,0.f,x),make_float3(-y,0.f,-x),make_float3(-y,0.f,x),
         };
-    uint3 triangles[20] = {
+    uint3 triangles[n_faces] = {
         make_uint3(0,11,5), make_uint3(0,5,1), make_uint3(0,1,7), make_uint3(0,7,10), make_uint3(0,10,11),
         make_uint3(1,5,9), make_uint3(5,11,4), make_uint3(11,10,2), make_uint3(10,7,6), make_uint3(7,1,8),
         make_uint3(3,9,4), make_uint3(3,4,2), make_uint3(3,2,6), make_uint3(3,6,8), make_uint3(3,8,9),
@@ -438,19 +440,44 @@ namespace icosahedron{
     };
 }
 
+
+namespace triangle{
+
+    constexpr int n_verts = 3;
+    constexpr int n_faces = 1;
+    float3 vertices[n_verts] = {make_float3(-1.,-1.,0.),make_float3(-1.,1.,0.),make_float3(1.,0.,0.)};
+    uint3 triangles[n_faces] = {make_uint3(2,1,0)};
+}
+
+
+namespace tetrahedron{
+
+    constexpr int n_verts = 4;
+    constexpr int n_faces = 4;
+    float3 vertices[n_verts] = {make_float3(-1.,-1.,0.),make_float3(-1.,1.,0.),make_float3(1.,0.,0.),make_float3(0.,0.,1.)};
+    uint3 triangles[n_faces] = {make_uint3(2,1,0), make_uint3(2,1,3), make_uint3(0,1,3), make_uint3(2,0,3)};
+    void construct(){
+        for(int i = 0; i < n_verts; ++i){
+            vertices[i] -= make_float3(-.25f,0.f,.25f);
+        }
+    }
+}
+
 void construct_icosahedrons(const GaussiansData& data, std::vector<float3>& vertices,
      std::vector<uint3>& triangles){
-    using icosahedron::n_verts;
-    using icosahedron::n_faces;
+    namespace primitive = icosahedron;
+    //primitive::construct();
+    using primitive::n_verts;
+    using primitive::n_faces;
     vertices.resize(n_verts*data.numgs);
     triangles.resize(n_faces*data.numgs);
     for(int i = 0; i < data.numgs; ++i){
         for(int j = 0; j < n_verts; ++j){
             // TODO: add transformation
-            vertices[j+i*n_verts] = icosahedron::vertices[j]+data.xyz[i];
+            vertices[j+i*n_verts] = primitive::vertices[j]*data.scaling[i]+data.xyz[i];
         }
         for(int j = 0; j < n_faces; ++j){
-            triangles[j+i*n_faces] = icosahedron::triangles[j]+make_uint3(i*n_verts);
+            triangles[j+i*n_faces] = primitive::triangles[j]+make_uint3(i*n_verts);
         }
     }
 }
@@ -478,7 +505,7 @@ void GaussiansAS::build(const GaussiansData& data) {
     accel_options.operation = OPTIX_BUILD_OPERATION_BUILD;
 
     // Our build input is a simple list of non-indexed triangle vertices
-    const uint32_t triangle_input_flags[1] = {OPTIX_GEOMETRY_FLAG_NONE};
+    const uint32_t triangle_input_flags[1] ={OPTIX_GEOMETRY_FLAG_NONE};// {OPTIX_GEOMETRY_FLAG_DISABLE_TRIANGLE_FACE_CULLING}; - does not do anything
     OptixBuildInput triangle_input = {};
     triangle_input.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
     triangle_input.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
@@ -503,6 +530,9 @@ void GaussiansAS::build(const GaussiansData& data) {
     CUDA_CHECK(cudaMalloc(
         reinterpret_cast<void **>(&d_temp_buffer_gas),
         gas_buffer_sizes.tempSizeInBytes));
+
+    std::cout << "GAS size " << gas_buffer_sizes.outputSizeInBytes/1024.f/1024.f << " MiB" << std::endl;
+
     CUDA_CHECK(cudaMalloc(
         reinterpret_cast<void **>(&d_gas_output_buffer),
         gas_buffer_sizes.outputSizeInBytes));
@@ -525,6 +555,4 @@ void GaussiansAS::build(const GaussiansData& data) {
     // We can now free the scratch space buffer used during build and the vertex
     // inputs, since they are not needed by our trivial shading method
     CUDA_CHECK(cudaFree(reinterpret_cast<void *>(d_temp_buffer_gas)));
-
-    std::cout << "BUILT" << std::endl;
 }

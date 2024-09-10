@@ -74,8 +74,8 @@ class GaussiansAS {
     int8_t device = -1;
     OptixTraversableHandle gas_handle_ = 0;
     CUdeviceptr d_gas_output_buffer = 0;
-    CUdeviceptr d_vertices;
-    CUdeviceptr d_triangles;
+    CUdeviceptr d_vertices = 0;
+    CUdeviceptr d_triangles = 0;
 };
 
 

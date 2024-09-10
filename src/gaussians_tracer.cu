@@ -33,9 +33,18 @@ extern "C" __global__ void __raygen__rg() {
         1,  // SBT stride   -- See SBT discussion
         0,  // missSBTIndex -- See SBT discussion
         p0);
+
+    // int y = idx.x/800;
+    // int x = idx.x-y*800;
+    // int o = 400;
+    // if((x-o)*(x-o)+(y-o)*(y-o)<5000){
+    //     params.radiance[idx.x] = make_float3(1.,0.,0.);
+    // }
 }
 
 extern "C" __global__ void __miss__ms() {
+    const uint3 idx = optixGetLaunchIndex();
+    //params.radiance[idx.x] = make_float3(0.,0.,1.);
 }
 
 extern "C" __global__ void __closesthit__ms() {
@@ -50,13 +59,13 @@ extern "C" __global__ void __anyhit__ms() {
 
     // When built-in triangle intersection is used, a number of fundamental
     // attributes are provided by the OptiX API, indlucing barycentric coordinates.
-    // const float2 barycentrics = optixGetTriangleBarycentrics();
+    const float2 barycentrics = optixGetTriangleBarycentrics();
     const uint3 idx = optixGetLaunchIndex();
     const uint3 dim = optixGetLaunchDimensions();
     const unsigned int current_triangle = optixGetPrimitiveIndex();
     //params.hit_distances[idx.x * params.max_ray_triangles + num_triangles] = optixGetRayTmax();
-
+    params.radiance[idx.x] = make_float3(1.-barycentrics.x-barycentrics.y, barycentrics);
     // setPayload(make_float3(barycentrics, 1.0f));
-    optixSetPayload_0(num_triangles + 1);
-    optixIgnoreIntersection();
+    //optixSetPayload_0(num_triangles + 1);
+    //optixIgnoreIntersection();
 }
