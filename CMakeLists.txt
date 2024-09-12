@@ -15,6 +15,8 @@ message("LIBCNPY ${LIBCNPY}")
 find_package(Torch REQUIRED)
 find_package(CGAL REQUIRED)
 
+find_package(glm CONFIG REQUIRED)
+
 include(FetchContent)
 FetchContent_Declare(
     pybind11
@@ -102,6 +104,7 @@ pybind11_add_module(gsrt_cpp_extension
 
 target_link_libraries(gsrt_cpp_extension PRIVATE ${CUDA_LIBRARIES} ${TORCH_LIBRARIES})
 target_link_libraries(gsrt_cpp_extension PRIVATE CGAL::CGAL)
+target_link_libraries(gsrt_cpp_extension PRIVATE glm::glm)
 target_compile_features(gsrt_cpp_extension PRIVATE cxx_std_17)
 set_target_properties(gsrt_cpp_extension
     PROPERTIES

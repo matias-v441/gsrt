@@ -37,27 +37,39 @@ tracer1 = GaussiansTracer(device)
 #      (torch.zeros((1,3)), torch.zeros((1,3)), torch.zeros((1,3)) ),
 #      (torch.zeros((1,1)), torch.zeros((1,1)), torch.zeros((1,1)) )
 #      ]
-gs = [[],[],[],[]]
-nsteps = 5
-w_width = 50#35000.
-step_size = w_width/nsteps
-scale_x = 1
-scale_y = 1
-for i in range(nsteps):
-    for j in range(nsteps):
-        s = -w_width*.5
-        gs[0].append(torch.tensor([[s+step_size*i,s+step_size*j,0.]]))
-        gs[1].append(torch.zeros((1,4)))
-        gs[2].append(torch.tensor([scale_x*(i+1),scale_y*(j+1),1.]))
-        gs[3].append(torch.zeros((1,1)))
+#gs = [[],[],[],[]]
+#nsteps = 5
+#w_width = 50#35000.
+#step_size = w_width/nsteps
+#scale_x = 1
+#scale_y = 1
+#for i in range(nsteps-1):
+#    for j in range(nsteps):
+#        s = -w_width*.5
+#        gs[0].append(torch.tensor([[s+step_size*i,s+step_size*j,0.]]))
+#        gs[1].append(torch.tensor([0.99,0.16,0.,0.]))
+#        gs[2].append(torch.tensor([scale_x*(i+1),scale_y*(j+1),1.]))
+#        gs[3].append(torch.zeros((1,1)))
 
 #gs[0].append(torch.tensor([[0.,0.,0.]]))
 #gs[1].append(torch.zeros((1,4)))
 #gs[2].append(torch.ones((1,3))*1)
 #gs[3].append(torch.zeros((1,1)))
 
-gs_merged = [torch.stack(x,dim=0) for x in gs]
-tracer1.load_gaussians(*gs_merged)
+#gs_merged = [torch.stack(x,dim=0) for x in gs]
+#tracer1.load_gaussians(*gs_merged)
+
+gaussians,it = torch.load("data/drums.pth")
+gs_xyz = gaussians[1].detach().cpu()
+gs_scaling = torch.exp(gaussians[4].detach().cpu())
+#gs_scaling = torch.ones((1,3)).repeat((gs_xyz.shape[0],1))*.01
+gs_rotation = gaussians[5].detach().cpu()
+gs_opacity = torch.sigmoid(gaussians[6].detach().cpu())
+print(torch.mean(gs_opacity))
+print(torch.min(gs_scaling),torch.max(gs_scaling))
+
+tracer1.load_gaussians(gs_xyz,gs_rotation,gs_scaling,gs_opacity)
+
 origin = torch.tensor([0.,0.,50.])
 res_x,res_y = 800,800
 w,h = 800,800

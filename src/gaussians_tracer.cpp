@@ -13,6 +13,9 @@
 #include "utils/exception.h"
 #include "utils/vec_math.h"
 
+#define GLM_FORCE_SWIZZLE
+#include <glm/glm.hpp>
+
 // These structs represent the data blocks of our SBT records
 template <typename T>
 struct SbtRecord {
@@ -103,9 +106,19 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
     // Create module
     //
     {
+        unsigned int payloadFlags = OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_WRITE | OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ 
+            | OPTIX_PAYLOAD_SEMANTICS_AH_READ  | OPTIX_PAYLOAD_SEMANTICS_AH_WRITE;
+        unsigned int semantics[4] = {payloadFlags,payloadFlags,payloadFlags,payloadFlags,};
+
+        OptixPayloadType payloadType;
+        payloadType.payloadSemantics = semantics;
+        payloadType.numPayloadValues = 4;
+
         OptixModuleCompileOptions module_compile_options = {};
         module_compile_options.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
         module_compile_options.optLevel = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
+        module_compile_options.numPayloadTypes = 1;
+        module_compile_options.payloadTypes = &payloadType;
 
 // The following is not supported in Optix 7.2
 // #define XSTR(x) STR(x)
@@ -119,7 +132,7 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
 
         pipeline_compile_options.usesMotionBlur = false;
         pipeline_compile_options.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
-        pipeline_compile_options.numPayloadValues = 1;
+        pipeline_compile_options.numPayloadValues = 0;
         // https://forums.developer.nvidia.com/t/how-to-calculate-numattributevalues-of-optixpipelinecompileoptions/110833
         pipeline_compile_options.numAttributeValues = 2;
 #ifdef DEBUG  // Enables debug exceptions during optix launches. This may incur significant performance cost and should only be done during development.
@@ -357,16 +370,20 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
                                    ) {
     CUDA_CHECK(cudaSetDevice(device));
 
-    // TODO: we can reuse the triangle memory
-    // No need to allocate again here
     {
         Params params;
-        //params.num_hits = num_hits_out;
-        //params.hit_ids = hit_ids_out;
-        //params.hit_distances = hit_distances_out;
         params.handle = gaussians_structure->gas_handle();
+
         params.ray_origins = ray_origins;
         params.ray_directions = ray_directions;
+
+        auto& gs = gaussians_structure->device_gaussians();
+        params.num_gs = gs.numgs;
+        params.gs_xyz = gs.xyz;
+        params.gs_rotation = gs.rotation;
+        params.gs_scaling = gs.scaling;
+        params.gs_opacity = gs.opacity;
+
         params.radiance = radiance;
         params.transmittance = transmittance;
 
@@ -396,14 +413,15 @@ GaussiansAS::GaussiansAS(GaussiansAS &&other) noexcept
       gas_handle_(std::exchange(other.gas_handle_, 0)),
       d_gas_output_buffer(std::exchange(other.d_gas_output_buffer, 0)),
       d_vertices(std::exchange(other.d_vertices, 0)),
-      d_triangles(std::exchange(other.d_triangles, 0)) {}
+      d_triangles(std::exchange(other.d_triangles, 0)),
+      d_gaussians(std::exchange(other.d_gaussians, {})) {}
 
 void GaussiansAS::release() {
     bool device_set = false;
-    auto device_free = [dev=device,&device_set](CUdeviceptr& dptr){
+    auto device_free = [dev=device,&device_set](auto& dptr){
         if (dptr != 0) {
             if (!device_set) { CUDA_CHECK(cudaSetDevice(dev)); device_set = true; }
-            CUDA_CHECK(cudaFree(reinterpret_cast<void *>(dptr)));
+            CUDA_CHECK(cudaFree(reinterpret_cast<void*>(dptr)));
             dptr = 0;
         }
     };
@@ -411,6 +429,10 @@ void GaussiansAS::release() {
     gas_handle_ = 0;
     device_free(d_vertices);
     device_free(d_triangles);
+    device_free(d_gaussians.xyz);
+    device_free(d_gaussians.rotation);
+    device_free(d_gaussians.scaling);
+    device_free(d_gaussians.opacity);
 }
 
 GaussiansAS::~GaussiansAS() noexcept(false) {
@@ -421,8 +443,6 @@ GaussiansAS::~GaussiansAS() noexcept(false) {
 }
 
 namespace icosahedron{
-    //constexpr float x = 1.f;
-    //constexpr float y = (1.0 + sqrt(5.0)) / 2.0;
     constexpr float x = sqrt(.4f*(5.f+sqrt(5.f))) *.5f;
     constexpr float y = x*(1.f+sqrt(5.f))*.5f;
     constexpr int n_verts = 12;
@@ -463,7 +483,26 @@ namespace tetrahedron{
     }
 }
 
-void construct_icosahedrons(const GaussiansData& data, std::vector<float3>& vertices,
+glm::mat3 construct_rotation(float4 vec){
+    glm::vec4 q = glm::normalize(glm::vec4(vec.x,vec.y,vec.z,vec.w));
+    glm::mat3 R(0.0f);
+    float r = q[0];
+    float x = q[1];
+    float y = q[2];
+    float z = q[3];
+    R[0][0] = 1. - 2. * (y*y + z*z);
+    R[1][0] = 2. * (x*y - r*z);
+    R[2][0] = 2. * (x*z + r*y);
+    R[0][1] = 2. * (x*y + r*z);
+    R[1][1] = 1. - 2. * (x*x + z*z);
+    R[2][1] = 2. * (y*z - r*x);
+    R[0][2] = 2. * (x*z - r*y);
+    R[1][2] = 2. * (y*z + r*x);
+    R[2][2] = 1. - 2. * (x*x + y*y);
+    return R;
+}
+
+void construct_primitives(const GaussiansData& data, std::vector<float3>& vertices,
      std::vector<uint3>& triangles){
     namespace primitive = icosahedron;
     //primitive::construct();
@@ -471,10 +510,14 @@ void construct_icosahedrons(const GaussiansData& data, std::vector<float3>& vert
     using primitive::n_faces;
     vertices.resize(n_verts*data.numgs);
     triangles.resize(n_faces*data.numgs);
+    const float alpha_min = .01;
     for(int i = 0; i < data.numgs; ++i){
         for(int j = 0; j < n_verts; ++j){
-            // TODO: add transformation
-            vertices[j+i*n_verts] = primitive::vertices[j]*data.scaling[i]+data.xyz[i];
+            float adaptive_scale = sqrt(2.*log(data.opacity[i]/alpha_min));
+            float3 v = primitive::vertices[j]*data.scaling[i]*adaptive_scale;
+            glm::mat3 R = construct_rotation(data.rotation[i]);
+            glm::vec3 w = R*glm::vec3(v.x,v.y,v.z);
+            vertices[j+i*n_verts] = make_float3(w.x,w.y,w.z)+data.xyz[i];
         }
         for(int j = 0; j < n_faces; ++j){
             triangles[j+i*n_faces] = primitive::triangles[j]+make_uint3(i*n_verts);
@@ -489,14 +532,21 @@ void GaussiansAS::build(const GaussiansData& data) {
 
     std::vector<float3> vertices;
     std::vector<uint3> triangles;
-    construct_icosahedrons(data, vertices, triangles);
+    construct_primitives(data, vertices, triangles);
+
+    auto toDevice = [&](auto& dst, void* src, size_t size){
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dst), size));
+        CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(dst), src, size, cudaMemcpyHostToDevice));
+    };
     
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertices), vertices.size() * sizeof(float3)));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_triangles), triangles.size() * sizeof(uint3)));
-    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_vertices),
-                vertices.data(), vertices.size() * sizeof(float3), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_triangles),
-                triangles.data(), triangles.size() * sizeof(uint3), cudaMemcpyHostToDevice));
+    toDevice(d_vertices, vertices.data(), vertices.size() * sizeof(float3));
+    toDevice(d_triangles, triangles.data(), triangles.size() * sizeof(uint3));
+
+    d_gaussians.numgs = data.numgs;
+    toDevice(d_gaussians.xyz, data.xyz, data.numgs*sizeof(float3));
+    toDevice(d_gaussians.rotation, data.rotation, data.numgs*sizeof(float4));
+    toDevice(d_gaussians.scaling, data.scaling, data.numgs*sizeof(float3));
+    toDevice(d_gaussians.opacity, data.opacity, data.numgs*sizeof(float));
 
     // Use default options for simplicity.  In a real use case we would want to
     // enable compaction, etc

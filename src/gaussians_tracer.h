@@ -53,6 +53,7 @@ class GaussiansAS {
         swap(first.d_gas_output_buffer, second.d_gas_output_buffer);
         swap(first.d_vertices, second.d_vertices);
         swap(first.d_triangles, second.d_triangles);
+        swap(first.d_gaussians, second.d_gaussians);
     }
 
     OptixTraversableHandle gas_handle() const {
@@ -66,6 +67,10 @@ class GaussiansAS {
         return gas_handle_ != 0;
     }
 
+    const GaussiansData& device_gaussians() const{
+        return d_gaussians;
+    }
+
    private:
     void build(const GaussiansData& gaussians);
 
@@ -76,6 +81,7 @@ class GaussiansAS {
     CUdeviceptr d_gas_output_buffer = 0;
     CUdeviceptr d_vertices = 0;
     CUdeviceptr d_triangles = 0;
+    GaussiansData d_gaussians{};
 };
 
 
