@@ -65,10 +65,18 @@ gs_scaling = torch.exp(gaussians[4].detach().cpu())
 #gs_scaling = torch.ones((1,3)).repeat((gs_xyz.shape[0],1))*.01
 gs_rotation = gaussians[5].detach().cpu()
 gs_opacity = torch.sigmoid(gaussians[6].detach().cpu())
-print(torch.mean(gs_opacity))
-print(torch.min(gs_scaling),torch.max(gs_scaling))
-
-tracer1.load_gaussians(gs_xyz,gs_rotation,gs_scaling,gs_opacity)
+gs_features_dc = gaussians[2].detach().cpu()
+gs_features_rest = gaussians[3].detach().cpu()
+gs_active_sh_degree = gaussians[0]
+gs_sh = torch.cat((gs_features_dc,gs_features_rest),dim=1).contiguous()
+print(gs_features_dc.shape)
+print(gs_features_rest.shape)
+print(gs_sh.shape)
+print(gs_active_sh_degree)
+#print(torch.mean(gs_opacity))
+#print(torch.min(gs_scaling),torch.max(gs_scaling))
+tracer1.load_gaussians(gs_xyz,gs_rotation,gs_scaling,gs_opacity,gs_sh,gs_active_sh_degree)
+#%%
 
 origin = torch.tensor([0.,0.,50.])
 res_x,res_y = 800,800

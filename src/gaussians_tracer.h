@@ -19,7 +19,10 @@ struct GaussiansData
     float3 *xyz;
     float4 *rotation;
     float3 *scaling;
-    float* opacity;
+    float *opacity;
+    float3 *sh;
+
+    int sh_deg;
 };
 
 class GaussiansAS {

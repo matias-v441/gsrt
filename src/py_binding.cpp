@@ -64,12 +64,15 @@ struct PyGaussiansTracer {
         const torch::Tensor &xyz,
         const torch::Tensor &rotation,
         const torch::Tensor &scaling,
-        const torch::Tensor &opacity) {
+        const torch::Tensor &opacity,
+        const torch::Tensor &sh,
+        const int sh_deg) {
 
         CHECK_HOST_FLOAT_DIM(xyz,3);
         CHECK_HOST_FLOAT_DIM(rotation,4);
         CHECK_HOST_FLOAT_DIM(scaling,3);
         CHECK_HOST_FLOAT_DIM(opacity,1);
+        CHECK_HOST_FLOAT_DIM(sh,3);
         
         GaussiansData data;
         data.numgs = xyz.numel() / 3;
@@ -77,6 +80,8 @@ struct PyGaussiansTracer {
         data.rotation = reinterpret_cast<float4 *>(rotation.data_ptr());
         data.scaling = reinterpret_cast<float3 *>(scaling.data_ptr());
         data.opacity = reinterpret_cast<float *>(opacity.data_ptr());
+        data.sh = reinterpret_cast<float3 *>(sh.data_ptr());
+        data.sh_deg = sh_deg;
         tracer->load_gaussians(data);
     }
 

@@ -383,6 +383,8 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.gs_rotation = gs.rotation;
         params.gs_scaling = gs.scaling;
         params.gs_opacity = gs.opacity;
+        params.gs_sh = gs.sh;
+        params.sh_deg = gs.sh_deg;
 
         params.radiance = radiance;
         params.transmittance = transmittance;
@@ -433,6 +435,7 @@ void GaussiansAS::release() {
     device_free(d_gaussians.rotation);
     device_free(d_gaussians.scaling);
     device_free(d_gaussians.opacity);
+    device_free(d_gaussians.sh);
 }
 
 GaussiansAS::~GaussiansAS() noexcept(false) {
@@ -547,6 +550,7 @@ void GaussiansAS::build(const GaussiansData& data) {
     toDevice(d_gaussians.rotation, data.rotation, data.numgs*sizeof(float4));
     toDevice(d_gaussians.scaling, data.scaling, data.numgs*sizeof(float3));
     toDevice(d_gaussians.opacity, data.opacity, data.numgs*sizeof(float));
+    toDevice(d_gaussians.sh, data.sh, data.numgs*sizeof(float3)*16);
 
     // Use default options for simplicity.  In a real use case we would want to
     // enable compaction, etc

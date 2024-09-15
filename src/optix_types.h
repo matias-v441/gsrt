@@ -7,6 +7,8 @@ struct Params {
     const float4* gs_rotation;
     const float3* gs_scaling;
     const float* gs_opacity;
+    const float3* gs_sh;
+    int sh_deg;
 
     float3* radiance;
     float* transmittance;
