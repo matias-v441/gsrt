@@ -140,4 +140,5 @@ outputs/
 .vscode
 
 tetranerf/
+data/
 
