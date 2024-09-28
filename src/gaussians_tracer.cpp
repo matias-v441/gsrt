@@ -106,8 +106,12 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
     // Create module
     //
     {
-        unsigned int payloadFlags = OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_WRITE | OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ 
-            | OPTIX_PAYLOAD_SEMANTICS_AH_READ  | OPTIX_PAYLOAD_SEMANTICS_AH_WRITE;
+        unsigned int payloadFlags =
+             OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_WRITE | OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ 
+            | OPTIX_PAYLOAD_SEMANTICS_AH_READ  | OPTIX_PAYLOAD_SEMANTICS_AH_WRITE
+            | OPTIX_PAYLOAD_SEMANTICS_MS_READ  | OPTIX_PAYLOAD_SEMANTICS_MS_WRITE
+            | OPTIX_PAYLOAD_SEMANTICS_CH_READ  | OPTIX_PAYLOAD_SEMANTICS_CH_WRITE
+            ;
         unsigned int semantics[4] = {payloadFlags,payloadFlags,payloadFlags,payloadFlags,};
 
         OptixPayloadType payloadType;
@@ -385,6 +389,7 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.gs_opacity = gs.opacity;
         params.gs_sh = gs.sh;
         params.sh_deg = gs.sh_deg;
+        params.gs_normals = gs.normals;
 
         params.radiance = radiance;
         params.transmittance = transmittance;
@@ -436,6 +441,7 @@ void GaussiansAS::release() {
     device_free(d_gaussians.scaling);
     device_free(d_gaussians.opacity);
     device_free(d_gaussians.sh);
+    device_free(d_gaussians.normals);
 }
 
 GaussiansAS::~GaussiansAS() noexcept(false) {
@@ -506,24 +512,36 @@ glm::mat3 construct_rotation(float4 vec){
 }
 
 void construct_primitives(const GaussiansData& data, std::vector<float3>& vertices,
-     std::vector<uint3>& triangles){
+     std::vector<uint3>& triangles, std::vector<float3>& normals){
     namespace primitive = icosahedron;
     //primitive::construct();
     using primitive::n_verts;
     using primitive::n_faces;
     vertices.resize(n_verts*data.numgs);
     triangles.resize(n_faces*data.numgs);
+    normals.resize(n_faces*data.numgs);
     const float alpha_min = .01;
     for(int i = 0; i < data.numgs; ++i){
+
+        glm::mat3 R = construct_rotation(data.rotation[i]);
+        float adaptive_scale = sqrt(2.*log(data.opacity[i]/alpha_min));
+        float3 s = data.scaling[i]*adaptive_scale;
+        glm::vec3 scale = glm::vec3(s.x,s.y,s.z);
+
         for(int j = 0; j < n_verts; ++j){
-            float adaptive_scale = sqrt(2.*log(data.opacity[i]/alpha_min));
-            float3 v = primitive::vertices[j]*data.scaling[i]*adaptive_scale;
-            glm::mat3 R = construct_rotation(data.rotation[i]);
-            glm::vec3 w = R*glm::vec3(v.x,v.y,v.z);
+            float3 v = primitive::vertices[j];
+            glm::vec3 w = R*(scale*glm::vec3(v.x,v.y,v.z));
             vertices[j+i*n_verts] = make_float3(w.x,w.y,w.z)+data.xyz[i];
         }
+
         for(int j = 0; j < n_faces; ++j){
-            triangles[j+i*n_faces] = primitive::triangles[j]+make_uint3(i*n_verts);
+            uint3 triag = primitive::triangles[j];
+            triag += make_uint3(i*n_verts);
+            triangles[j+i*n_faces] = triag;
+            const float3 &v1 = vertices[triag.x];
+            const float3 &v2 = vertices[triag.y];
+            const float3 &v3 = vertices[triag.z];
+            normals[j+i*n_faces] = normalize(cross(v2-v1,v3-v1));
         }
     }
 }
@@ -535,7 +553,8 @@ void GaussiansAS::build(const GaussiansData& data) {
 
     std::vector<float3> vertices;
     std::vector<uint3> triangles;
-    construct_primitives(data, vertices, triangles);
+    std::vector<float3> normals;
+    construct_primitives(data, vertices, triangles, normals);
 
     auto toDevice = [&](auto& dst, void* src, size_t size){
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dst), size));
@@ -551,6 +570,7 @@ void GaussiansAS::build(const GaussiansData& data) {
     toDevice(d_gaussians.scaling, data.scaling, data.numgs*sizeof(float3));
     toDevice(d_gaussians.opacity, data.opacity, data.numgs*sizeof(float));
     toDevice(d_gaussians.sh, data.sh, data.numgs*sizeof(float3)*16);
+    toDevice(d_gaussians.normals, normals.data(), normals.size()*sizeof(float3));
 
     // Use default options for simplicity.  In a real use case we would want to
     // enable compaction, etc

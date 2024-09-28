@@ -8,7 +8,14 @@ struct Params {
     const float3* gs_scaling;
     const float* gs_opacity;
     const float3* gs_sh;
+
+    const float3* gs_normals;
+    
     int sh_deg;
+
+    //int triagPerParticle = 20; // not supported
+    //float resp_min = 0.01f;
+    //const float3* triangles; 
 
     float3* radiance;
     float* transmittance;

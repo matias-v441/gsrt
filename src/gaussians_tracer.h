@@ -22,6 +22,8 @@ struct GaussiansData
     float *opacity;
     float3 *sh;
 
+    float3 *normals;
+
     int sh_deg;
 };
 

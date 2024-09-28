@@ -59,12 +59,16 @@ tracer1 = GaussiansTracer(device)
 #gs_merged = [torch.stack(x,dim=0) for x in gs]
 #tracer1.load_gaussians(*gs_merged)
 
-gaussians,it = torch.load("data/drums.pth")
+#gaussians,it = torch.load("data/drums.pth")
+gaussians,it = torch.load("data/ficus/checkpoint/chkpnt-30000.pth")
 gs_xyz = gaussians[1].detach().cpu()
 gs_scaling = torch.exp(gaussians[4].detach().cpu())
 #gs_scaling = torch.ones((1,3)).repeat((gs_xyz.shape[0],1))*.01
 gs_rotation = gaussians[5].detach().cpu()
+
+gs_opacity = torch.ones_like(gaussians[6].detach().cpu()) 
 gs_opacity = torch.sigmoid(gaussians[6].detach().cpu())
+
 gs_features_dc = gaussians[2].detach().cpu()
 gs_features_rest = gaussians[3].detach().cpu()
 gs_active_sh_degree = gaussians[0]
@@ -75,10 +79,25 @@ print(gs_sh.shape)
 print(gs_active_sh_degree)
 #print(torch.mean(gs_opacity))
 #print(torch.min(gs_scaling),torch.max(gs_scaling))
+
+if False:
+    gs_xyz = torch.tensor([[0.,0.,0.]])
+    gs_scaling = torch.tensor([[.2,.1,.1]])
+    gs_rotation = torch.tensor([[0.98,0.,0.,0.18]])
+    gs_rotation = torch.tensor([[0.97,0.,0.18,0.18]])
+    #gs_rotation = torch.tensor([[1.,0.,0.,0.]])
+    print(gs_rotation[0].shape)
+    rot = build_rotation(gs_rotation)
+    print(torch.det(rot))
+    print(rot)
+    gs_opacity = torch.tensor([[1.]])
+    gs_sh = torch.zeros((1,16,3))
+    gs_active_sh_degree = 3
+
 tracer1.load_gaussians(gs_xyz,gs_rotation,gs_scaling,gs_opacity,gs_sh,gs_active_sh_degree)
 #%%
 
-origin = torch.tensor([0.,0.,50.])
+origin = torch.tensor([0.,0.,5.])
 res_x,res_y = 800,800
 w,h = 800,800
 num_rays = res_x*res_y
@@ -105,8 +124,9 @@ def trace_rays(R):
 
     res = tracer1.trace_rays(ray_origins,ray_directions)
     radiance = res["radiance"].cpu().reshape(res_x,res_y,3)
+    transmittance = res["transmittance"].cpu().reshape(res_x,res_y)
     #print(torch.sum(radiance))
-    return radiance
+    return radiance,transmittance
 
 yaw = 0.
 pitch = 0.
@@ -114,13 +134,18 @@ R = torch.eye(3)
 
 import matplotlib.pyplot as plt
 fig = plt.figure()
-imobj = plt.imshow(trace_rays(R).numpy())
+rad,trans = trace_rays(R)
+imobj = plt.imshow(rad.numpy())
 
 from matplotlib.backend_bases import KeyEvent,MouseEvent,MouseButton
 start = None
 
+render_transmittance = False
+
 def update():
-    imobj.set_data(trace_rays(R).numpy())
+    rad,trans = trace_rays(R)
+    im = trans if render_transmittance else rad
+    imobj.set_data(im.numpy())
     fig.canvas.draw_idle()
 
 def on_move(event):
@@ -168,6 +193,10 @@ def on_key(event):
         update()
     if event.key == "F":
         origin += R.T@torch.tensor([0.,0.,sz])
+        update()
+    if event.key == "T":
+        global render_transmittance
+        render_transmittance = not render_transmittance
         update()
         
 

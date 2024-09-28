@@ -17,6 +17,10 @@ struct Payload{
     float transmittance;
 };
 
+const int triagPerParticle = 20;
+const float Tmin = .001;
+const float resp_min = 0.01f;
+
 __device__ __forceinline__ Payload getPayload(){
     Payload payload;
     payload.radiance.x = __uint_as_float(optixGetPayload_0());
@@ -55,7 +59,7 @@ extern "C" __global__ void __raygen__rg() {
         ray_origin,
         ray_direction,
         0.0f,                      // Min intersection distance
-        1e16f,                     // Max intersection distance
+        10000.f,//1e16f,                     // Max intersection distance
         0.0f,                      // rayTime -- used for motion blur
         OptixVisibilityMask(255),  // Specify always visible
         OPTIX_RAY_FLAG_NONE,
@@ -69,10 +73,13 @@ extern "C" __global__ void __raygen__rg() {
 
 extern "C" __global__ void __miss__ms() {
     const uint3 idx = optixGetLaunchIndex();
-    //params.radiance[idx.x] = make_float3(0.,0.,1.);
-}
-
-extern "C" __global__ void __closesthit__ms() {
+    const uint3 dim = optixGetLaunchDimensions();
+    Payload payload = getPayload();
+    if(idx.x%800 <= 400)
+        payload.radiance = make_float3(1.);
+    else 
+        payload.radiance = make_float3(0.);
+    //setPayload(payload);
 }
 
 __device__ Matrix3x3 construct_rotation(float4 vec){
@@ -90,19 +97,19 @@ __device__ Matrix3x3 construct_rotation(float4 vec){
 
 __device__ float computeResponse(unsigned int gs_id){
     const uint3 idx = optixGetLaunchIndex();
-    const float3 o = params.ray_origins[idx.x];
-    const float3 d = params.ray_directions[idx.x];
+    const float3 o = optixGetWorldRayOrigin();
+    const float3 d = optixGetWorldRayDirection();
     const float3 mu = params.gs_xyz[gs_id];
     const float3 s = params.gs_scaling[gs_id];
-    Matrix3x3 R = construct_rotation(params.gs_rotation[gs_id]).transpose();
-    R.setRow(0,R.getRow(0)/(s.x+eps));
-    R.setRow(1,R.getRow(1)/(s.y+eps));
-    R.setRow(2,R.getRow(2)/(s.z+eps));
-    float3 og = R*(mu-o);
-    float3 dg = R*d;
+    Matrix3x3 Rt = construct_rotation(params.gs_rotation[gs_id]).transpose();
+    Rt.setRow(0,Rt.getRow(0)/(s.x+eps));
+    Rt.setRow(1,Rt.getRow(1)/(s.y+eps));
+    Rt.setRow(2,Rt.getRow(2)/(s.z+eps));
+    float3 og = Rt*(mu-o);
+    float3 dg = Rt*d;
     float tmax = dot(og,dg)/(dot(dg,dg)+eps);
     float3 samp = o+tmax*d;
-    float3 x = R*(samp-mu);
+    float3 x = Rt*(samp-mu);
     float resp = params.gs_opacity[gs_id]*exp(-dot(x,x));
     return resp;
 }
@@ -130,7 +137,7 @@ __device__ const float SH_C3[] = {
 __device__ float3 computeRadiance(unsigned int gs_id){
     const uint3 idx = optixGetLaunchIndex();
 
-    //const float3 dir = -params.ray_directions[idx.x];
+    //const float3 dir = optixGetWorldRayDirection();//-params.ray_directions[idx.x];
     const float3 mu = params.gs_xyz[gs_id];
     const float3 o = params.ray_origins[idx.x];
     const float3 dir = normalize(mu-o);
@@ -176,6 +183,31 @@ __device__ float3 computeRadiance(unsigned int gs_id){
     return result;
 }
 
+extern "C" __global__ void __closesthit__ms() {
+
+    const float2 barycentrics = optixGetTriangleBarycentrics();
+    const uint3 idx = optixGetLaunchIndex();
+
+    const unsigned int hitParticle = optixGetPrimitiveIndex()/triagPerParticle;
+    float3 radiance = make_float3(0.); 
+    const float resp = computeResponse(hitParticle);
+    if(resp > resp_min)
+    {
+        const float3 rad = computeRadiance(hitParticle); 
+        radiance = rad;
+    }
+
+    Payload payload = getPayload();
+    //payload.radiance = radiance;
+    //payload.radiance = make_float3(1.-barycentrics.x-barycentrics.y,barycentrics.x,barycentrics.y);
+    payload.radiance = make_float3(0.,1.,0.)*resp*payload.transmittance;
+
+    //setPayload(payload);
+
+    //params.radiance[idx.x] = radiance;
+    //params.radiance[idx.x] = make_float3(1.-barycentrics.x-barycentrics.y,barycentrics.x,barycentrics.y);
+}
+
 extern "C" __global__ void __anyhit__ms() {
 
     Payload payload = getPayload();
@@ -184,26 +216,70 @@ extern "C" __global__ void __anyhit__ms() {
     //    optixTerminateRay();
     //    return;
     //}
-    const int triagPerParticle = 20;
-    const float Tmin = 0.001;
-    const float resp_min = 0.01f;
+
 
     // When built-in triangle intersection is used, a number of fundamental
     // attributes are provided by the OptiX API, indlucing barycentric coordinates.
-    const float2 barycentrics = optixGetTriangleBarycentrics();
-    const uint3 idx = optixGetLaunchIndex();
 
-    const unsigned int hitParticle = optixGetPrimitiveIndex()/triagPerParticle;
+//#define MESH
+#ifndef MESH
+
+    const unsigned int prim_id = optixGetPrimitiveIndex();
+    const unsigned int hitParticle = prim_id/triagPerParticle;
+
+    const float3 d = optixGetWorldRayDirection();
+    // const float3 s = params.gs_scaling[hitParticle];
+    // Matrix3x3 R = construct_rotation(params.gs_rotation[hitParticle]).transpose();
+    // R.setRow(0,R.getRow(0)/(s.x+eps));
+    // R.setRow(1,R.getRow(1)/(s.y+eps));
+    // R.setRow(2,R.getRow(2)/(s.z+eps));
+    // const float3 its = R*(optixGetWorldRayOrigin()+optixGetRayTmax()*d);
+    // const float3 part_center = R*(its - params.gs_xyz[hitParticle]);
+    // if(dot(part_center,d) > 0.){
+    //     optixIgnoreIntersection();
+    //     return;
+    // }
+    float3 normal = params.gs_normals[prim_id];
+    if(dot(normal,d)>0.)
+    {
+        optixIgnoreIntersection();
+        return;
+    }
+
     const float resp = computeResponse(hitParticle);
     if(resp > resp_min){
         const float3 rad = computeRadiance(hitParticle); 
-        payload.radiance += payload.transmittance*resp*rad;
-        payload.transmittance *= (1-resp);
+        payload.radiance += rad*resp*payload.transmittance;
+        payload.transmittance *= (1.-resp);
+        //payload.transmittance += resp;
     }
 
     setPayload(payload);
 
-    if(payload.transmittance > Tmin){
+    if(payload.transmittance > Tmin)
+    {
         optixIgnoreIntersection();
     }
+    else{
+        optixTerminateRay();
+    }
+#else
+
+    const float2 barycentrics = optixGetTriangleBarycentrics();
+
+    const float3 d = optixGetWorldRayDirection();
+    
+    const unsigned int prim_id = optixGetPrimitiveIndex();
+    float3 normal = params.gs_normals[prim_id];
+
+    if(dot(normal,d)<0.)
+    {
+        payload.radiance = make_float3(1.-barycentrics.x-barycentrics.y,barycentrics.x,barycentrics.y);
+    }
+    setPayload(payload);
+    //optixIgnoreIntersection();
+
+    //const uint3 idx = optixGetLaunchIndex();
+    //params.radiance[idx.x] = make_float3(1.-barycentrics.x-barycentrics.y,barycentrics.x,barycentrics.y);
+#endif
 }
