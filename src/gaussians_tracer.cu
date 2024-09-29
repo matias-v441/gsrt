@@ -276,7 +276,7 @@ extern "C" __global__ void __anyhit__ms() {
     {
         payload.radiance = make_float3(1.-barycentrics.x-barycentrics.y,barycentrics.x,barycentrics.y);
     }
-    setPayload(payload);
+    //setPayload(payload);
     //optixIgnoreIntersection();
 
     //const uint3 idx = optixGetLaunchIndex();

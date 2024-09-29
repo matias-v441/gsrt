@@ -60,7 +60,7 @@ tracer1 = GaussiansTracer(device)
 #tracer1.load_gaussians(*gs_merged)
 
 #gaussians,it = torch.load("data/drums.pth")
-gaussians,it = torch.load("data/ficus/checkpoint/chkpnt-30000.pth")
+gaussians,it = torch.load("data/drums/checkpoint/chkpnt-30000.pth")
 gs_xyz = gaussians[1].detach().cpu()
 gs_scaling = torch.exp(gaussians[4].detach().cpu())
 #gs_scaling = torch.ones((1,3)).repeat((gs_xyz.shape[0],1))*.01
