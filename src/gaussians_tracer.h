@@ -127,7 +127,9 @@ class TraceRaysPipeline {
                     const float3 *ray_origins,
                     const float3 *ray_directions,
                     float3 *radiance,
-                    float *transmittance);
+                    float *transmittance,
+                    float3 *debug_map_0,
+                    float3 *debug_map_1);
 
    private:
     // Context, streams, and accel structures are inherited
@@ -176,14 +178,18 @@ class GaussiansTracer {
                     const float3 *ray_origins,
                     const float3 *ray_directions,
                     float3 *radiance,
-                    float *transmittance) {
+                    float *transmittance,
+                    float3 *debug_map_0,
+                    float3 *debug_map_1) {
         trace_rays_pipeline.trace_rays(
             &gaussians_structure,
             num_rays,
             ray_origins,
             ray_directions,
             radiance,
-            transmittance);
+            transmittance,
+            debug_map_0,
+            debug_map_1);
     }
 
    private:

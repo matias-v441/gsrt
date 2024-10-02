@@ -49,15 +49,22 @@ struct PyGaussiansTracer {
         const size_t num_rays = ray_origins.numel() / 3;
         const auto radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
         const auto transmittance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
+
+        const auto debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
+        const auto debug_map_1 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
+
         tracer->trace_rays(
             num_rays,
             reinterpret_cast<float3 *>(ray_origins.data_ptr()),
             reinterpret_cast<float3 *>(ray_directions.data_ptr()),
             reinterpret_cast<float3 *>(radiance.data_ptr()),
-            reinterpret_cast<float *>(transmittance.data_ptr())
+            reinterpret_cast<float *>(transmittance.data_ptr()),
+            reinterpret_cast<float3 *>(debug_map_0.data_ptr()),
+            reinterpret_cast<float3 *>(debug_map_1.data_ptr())
             );
 
-        return py::dict("radiance"_a = radiance, "transmittance"_a = transmittance);
+        return py::dict("radiance"_a = radiance, "transmittance"_a = transmittance,
+                        "debug_map_0"_a = debug_map_0, "debug_map_1"_a = debug_map_1);
     }
 
     void load_gaussians(

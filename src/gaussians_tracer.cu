@@ -19,7 +19,7 @@ struct Payload{
 
 const int triagPerParticle = 20;
 const float Tmin = .001;
-const float resp_min = 0.01f;
+const float respMin = 0.01f;
 
 __device__ __forceinline__ Payload getPayload(){
     Payload payload;
@@ -191,7 +191,7 @@ extern "C" __global__ void __closesthit__ms() {
     const unsigned int hitParticle = optixGetPrimitiveIndex()/triagPerParticle;
     float3 radiance = make_float3(0.); 
     const float resp = computeResponse(hitParticle);
-    if(resp > resp_min)
+    if(resp > respMin)
     {
         const float3 rad = computeRadiance(hitParticle); 
         radiance = rad;
@@ -205,7 +205,7 @@ extern "C" __global__ void __closesthit__ms() {
     //setPayload(payload);
 
     //params.radiance[idx.x] = radiance;
-    //params.radiance[idx.x] = make_float3(1.-barycentrics.x-barycentrics.y,barycentrics.x,barycentrics.y);
+    params.debug_map_0[idx.x] = make_float3(1.-barycentrics.x-barycentrics.y,barycentrics.x,barycentrics.y);
 }
 
 extern "C" __global__ void __anyhit__ms() {
@@ -247,7 +247,7 @@ extern "C" __global__ void __anyhit__ms() {
     }
 
     const float resp = computeResponse(hitParticle);
-    if(resp > resp_min){
+    if(resp > respMin){
         const float3 rad = computeRadiance(hitParticle); 
         payload.radiance += rad*resp*payload.transmittance;
         payload.transmittance *= (1.-resp);
@@ -256,13 +256,22 @@ extern "C" __global__ void __anyhit__ms() {
 
     setPayload(payload);
 
+
+    const float2 barycentrics = optixGetTriangleBarycentrics();
+    if(length(params.debug_map_1[optixGetLaunchIndex().x])==0.) params.debug_map_1[optixGetLaunchIndex().x] = make_float3(1.-barycentrics.x-barycentrics.y,barycentrics.x,barycentrics.y);
+
     if(payload.transmittance > Tmin)
     {
+
         optixIgnoreIntersection();
+
     }
     else{
+
         optixTerminateRay();
     }
+    
+
 #else
 
     const float2 barycentrics = optixGetTriangleBarycentrics();

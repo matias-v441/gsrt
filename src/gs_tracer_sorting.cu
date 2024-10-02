@@ -4,6 +4,7 @@
 #include "utils/Matrix.h"
 
 #include <vector>
+#include <float.h>
 
 using namespace util;
 
@@ -34,7 +35,7 @@ __device__ __forceinline__ void setPayload(const Payload& payload){
 }
 
 struct Hit{
-    float thit = -1.f;
+    float thit = FLT_MAX;
     int primId;
     float resp;
 };
@@ -43,7 +44,7 @@ constexpr int chunk_size = 16;
 
 constexpr int triagPerParticle = 20;
 constexpr float Tmin = 0.001;
-constexpr float resp_min = 0.01f;
+constexpr float respMin = 0.01f;
 
 __device__ float3 computeRadiance(unsigned int gs_id);
 
@@ -64,6 +65,9 @@ extern "C" __global__ void __raygen__rg() {
     Hit* hits_ptr = reinterpret_cast<Hit*>(hits);
     memcpy(p_hits, &hits_ptr, sizeof(void*));
 
+    for(int i = 0; i < chunk_size; ++i){
+        hits[i].thit = FLT_MAX;
+    }
 
     Payload payload{};
     payload.radiance = make_float3(0.f);
@@ -89,27 +93,21 @@ extern "C" __global__ void __raygen__rg() {
             1,  // SBT stride   -- See SBT discussion
             0,  // missSBTIndex -- See SBT discussion
             p_hits[0],p_hits[1],p[2],p[3]);
-        float last_thit = 0.;
-        int m = chunk_size-1;
+        
+        float last_thit = FLT_MAX;
         for(int i = 0; i < chunk_size; ++i){
-            if(hits[i].thit < 0.){m=max(0,i-1);break;}
-        }
-        //printf("%d",m);
-        //last_thit = hits[0].thit;
-        for(int i = 0; i < m; ++i){
-            //if(hits[i].thit < 0.) goto end_while;
+            if(hits[i].thit == FLT_MAX){
+                if(chunk_id == 0){ //miss
+                    radiance = make_float3(1.,1.,1.);
+                }
+                goto end_while;
+            }
+            if(hits[i].resp < respMin) continue;
             radiance += hits[i].resp*T*computeRadiance(hits[i].primId);
             T *= (1.-hits[i].resp);
             last_thit = hits[i].thit;
-            hits[i].thit = -1.f;
+            hits[i].thit = FLT_MAX;
         }
-        if(m == 0 && chunk_id == 0){
-            radiance = make_float3(1.,1.,1.);
-            //printf("miss\n");
-            break;
-        }
-        if(m!=chunk_size-1) break;
-        
         min_dist = last_thit+eps;
         chunk_id++;
     } end_while:
@@ -235,15 +233,15 @@ extern "C" __global__ void __anyhit__ms() {
     Hit* hits;
     memcpy(&hits, p_hits, sizeof(p_hits));
 
-    const float2 barycentrics = optixGetTriangleBarycentrics();
-    const uint3 idx = optixGetLaunchIndex();
-
     const unsigned int hitParticle = optixGetPrimitiveIndex()/triagPerParticle;
 
     const float3 d = optixGetWorldRayDirection();
     const float3 its = optixGetWorldRayOrigin()+optixGetRayTmax()*d;
-    const float3 part_center = its - params.gs_xyz[hitParticle];
-    if(dot(part_center,d) > 0.){
+    
+    const unsigned int prim_id = optixGetPrimitiveIndex();
+    float3 normal = params.gs_normals[prim_id];
+    if(dot(normal,d)>0.)
+    {
         optixIgnoreIntersection();
         return;
     }
@@ -251,19 +249,20 @@ extern "C" __global__ void __anyhit__ms() {
     float resp,thit; 
     computeResponse(hitParticle,resp,thit);
     
-    if(resp > resp_min){
+    if(resp > respMin){
         Hit hit;
         hit.primId = hitParticle;
         hit.resp = resp;
+        //hit.thit = optixGetRayTmax();
         hit.thit = thit;
         for(int i = 0; i < chunk_size; ++i){
-            if(hit.thit > hits[i].thit){
+            if(hit.thit < hits[i].thit){
                 Hit h = hit;
                 hit = hits[i];
                 hits[i] = h;
             }
         }
-        if(hits[chunk_size-1].thit < 0.f)
+        if(hits[chunk_size-1].thit == FLT_MAX)
             optixIgnoreIntersection();
     }else{
         optixIgnoreIntersection();

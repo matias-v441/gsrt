@@ -370,7 +370,9 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
                                    const float3 *ray_origins,
                                    const float3 *ray_directions,
                                    float3 *radiance,
-                                   float *transmittance
+                                   float *transmittance,
+                                   float3 *debug_map_0,
+                                   float3 *debug_map_1
                                    ) {
     CUDA_CHECK(cudaSetDevice(device));
 
@@ -393,6 +395,8 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
 
         params.radiance = radiance;
         params.transmittance = transmittance;
+        params.debug_map_0 = debug_map_0;
+        params.debug_map_1 = debug_map_1;
 
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),

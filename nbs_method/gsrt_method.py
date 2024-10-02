@@ -55,7 +55,7 @@ class GSRTMethod(Method):
             "required_features": frozenset(("color",)),
 
             # Declare supported outputs
-            "supported_outputs": ("color","transmittance"),
+            "supported_outputs": ("color","transmittance","debug_map_0","debug_map_1"),
         }
     
     def get_info(self) -> ModelInfo:
@@ -87,7 +87,11 @@ class GSRTMethod(Method):
         res = self.tracer.trace_rays(ray_origins,ray_directions)
         color = res["radiance"].cpu().reshape(res_x,res_y,3).numpy()
         transmittance = res["transmittance"].cpu().reshape(res_x,res_y)[:,:,None].repeat(1,1,3).numpy()
+        debug_map_0 = res["debug_map_0"].cpu().reshape(res_x,res_y,3).numpy()
+        debug_map_1 = res["debug_map_1"].cpu().reshape(res_x,res_y,3).numpy()
         return {
             "color": color,
-            "transmittance": transmittance
+            "transmittance": transmittance,
+            "debug_map_0": debug_map_0,
+            "debug_map_1": debug_map_1,
         }

@@ -19,6 +19,8 @@ struct Params {
 
     float3* radiance;
     float* transmittance;
+    float3* debug_map_0;
+    float3* debug_map_1;
 
     OptixTraversableHandle handle;
 };
