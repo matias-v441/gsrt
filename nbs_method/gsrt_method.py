@@ -1,7 +1,8 @@
 from typing import Any, Dict
 from nerfbaselines import Method
-from nerfbaselines._types import Dataset, ModelInfo
-from nerfbaselines._types import Cameras, CameraModel
+from nerfbaselines import Dataset, ModelInfo
+from nerfbaselines import Cameras, CameraModel
+from nerfbaselines import cameras
 import torch
 
 from extension import GaussiansTracer
@@ -25,7 +26,7 @@ class GSRTMethod(Method):
 
         gaussians,it = torch.load(checkpoint)
         gs_xyz = gaussians[1].detach().cpu()
-        gs_scaling = torch.exp(gaussians[4].detach().cpu())
+        gs_scaling = torch.exp(gaussians[4].detach().cpu())*1.5
         gs_rotation = gaussians[5].detach().cpu()
 
         #gs_opacity = torch.ones_like(gaussians[6].detach().cpu()) 
@@ -69,28 +70,34 @@ class GSRTMethod(Method):
 
     @torch.no_grad()
     def render(self, camera : Cameras, *, options=None):
-        w,h = camera.image_sizes[0]
-        res_x,res_y = w,h
-        num_rays = res_x*res_y
-        x,y=torch.meshgrid(torch.linspace(-w/2,w/2,res_x),torch.linspace(-h/2,h/2,res_y))
-        focus = 1250.
-        T = torch.from_numpy(camera.poses[0]).to(dtype=torch.float32)
-        R = T[:,:3]
-        t = T[:,3]
-        c_im = torch.stack([x.flatten(),y.flatten(),-torch.ones(num_rays)*focus],dim=1)
-        c_im /= c_im.norm(dim=1)[:,None]
-        fx,fy,cx,cy = camera.intrinsics[0]
-        c_im = c_im@R.T
-        origin = -t
-        ray_origins = origin.repeat(num_rays,1).to(self.device,dtype=torch.float32)
-        ray_directions = c_im.to(self.device,dtype=torch.float32)
-        res = self.tracer.trace_rays(ray_origins,ray_directions)
-        color = res["radiance"].cpu().reshape(res_x,res_y,3).numpy()
-        transmittance = res["transmittance"].cpu().reshape(res_x,res_y)[:,:,None].repeat(1,1,3).numpy()
+        # w,h = camera.image_sizes[0]
+        # res_x,res_y = w,h
+        # num_rays = res_x*res_y
+        # x,y=torch.meshgrid(torch.linspace(-w/2,w/2,res_x),torch.linspace(-h/2,h/2,res_y))
+        # focus = 1250.
+        # T = torch.from_numpy(camera.poses[0]).to(dtype=torch.float32)
+        # R = T[:,:3]
+        # t = T[:,3]
+        # c_im = torch.stack([x.flatten(),y.flatten(),-torch.ones(num_rays)*focus],dim=1)
+        # c_im /= c_im.norm(dim=1)[:,None]
+        # fx,fy,cx,cy = camera.intrinsics[0]
+        # c_im = c_im@R.T
+        # origin = -t
+        # ray_origins = origin.repeat(num_rays,1).to(self.device,dtype=torch.float32)
+        # ray_directions = c_im.to(self.device,dtype=torch.float32)
+
+        camera_th = camera.apply(lambda x, _: torch.from_numpy(x).contiguous().to(self.device))
+        xy = cameras.get_image_pixels(camera_th.image_sizes)
+        ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
+        res_x, res_y = camera.item().image_sizes
+
+        res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),ray_directions.float().squeeze(0).contiguous())
+        color = res["radiance"].cpu().reshape(res_y,res_x,3).numpy()
+        transmittance = res["transmittance"].cpu().reshape(res_y,res_x)[:,:,None].repeat(1,1,3).numpy()
         debug_map_0 = res["debug_map_0"].cpu().reshape(res_x,res_y,3).numpy()
         debug_map_1 = res["debug_map_1"].cpu().reshape(res_x,res_y,3).numpy()
         return {
-            "color": color,
+            "color": color + transmittance,
             "transmittance": transmittance,
             "debug_map_0": debug_map_0,
             "debug_map_1": debug_map_1,

@@ -40,7 +40,7 @@ struct Hit{
     float resp;
 };
 
-constexpr int chunk_size = 16;
+constexpr int chunk_size = 256;
 
 constexpr int triagPerParticle = 20;
 constexpr float Tmin = 0.001;
@@ -98,7 +98,7 @@ extern "C" __global__ void __raygen__rg() {
         for(int i = 0; i < chunk_size; ++i){
             if(hits[i].thit == FLT_MAX){
                 if(chunk_id == 0){ //miss
-                    radiance = make_float3(1.,1.,1.);
+                    //radiance = make_float3(1.,1.,1.);
                 }
                 goto end_while;
             }
