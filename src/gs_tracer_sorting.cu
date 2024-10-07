@@ -40,7 +40,7 @@ struct Hit{
     float resp;
 };
 
-constexpr int chunk_size = 256;
+constexpr int chunk_size = 64;
 
 constexpr int triagPerParticle = 20;
 constexpr float Tmin = 0.001;
@@ -76,9 +76,10 @@ extern "C" __global__ void __raygen__rg() {
 
     float3 radiance = make_float3(0.f);
     float T = 1.f;
-    constexpr float max_dist = 1e16f; 
+    constexpr float max_dist = 100.f;//1e16f; 
     float min_dist = 0.f;
     int chunk_id = 0;
+    int k = 0;
     while(T > Tmin && max_dist > min_dist){
         optixTrace(
             params.handle,
@@ -93,25 +94,28 @@ extern "C" __global__ void __raygen__rg() {
             1,  // SBT stride   -- See SBT discussion
             0,  // missSBTIndex -- See SBT discussion
             p_hits[0],p_hits[1],p[2],p[3]);
-        
+        k++;
         float last_thit = FLT_MAX;
         for(int i = 0; i < chunk_size; ++i){
-            if(hits[i].thit == FLT_MAX){
-                if(chunk_id == 0){ //miss
-                    //radiance = make_float3(1.,1.,1.);
-                }
-                goto end_while;
-            }
+            // if(hits[i].thit == FLT_MAX // && i == chunk_size-1
+            // ){
+            //     if(chunk_id == 0){ //miss
+            //         //radiance = make_float3(1.,1.,1.);
+            //     }
+            //     goto end_while;
+            // }
+            if(hits[i].thit == FLT_MAX) break;
+            last_thit = hits[i].thit;
             if(hits[i].resp < respMin) continue;
             radiance += hits[i].resp*T*computeRadiance(hits[i].primId);
             T *= (1.-hits[i].resp);
-            last_thit = hits[i].thit;
             hits[i].thit = FLT_MAX;
         }
         min_dist = last_thit+eps;
         chunk_id++;
+        
     } end_while:
-    
+    //printf("%d\n",k);
     params.radiance[idx.x] = radiance;
     params.transmittance[idx.x] = T;
 }
@@ -232,6 +236,8 @@ extern "C" __global__ void __anyhit__ms() {
     p_hits[1] = optixGetPayload_1();
     Hit* hits;
     memcpy(&hits, p_hits, sizeof(p_hits));
+
+    (*params.num_its)++;
 
     const unsigned int hitParticle = optixGetPrimitiveIndex()/triagPerParticle;
 

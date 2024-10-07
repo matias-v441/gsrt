@@ -22,6 +22,8 @@ struct Params {
     float3* debug_map_0;
     float3* debug_map_1;
 
+    unsigned long* num_its;
+
     OptixTraversableHandle handle;
 };
 

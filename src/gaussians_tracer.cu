@@ -212,6 +212,8 @@ extern "C" __global__ void __anyhit__ms() {
 
     Payload payload = getPayload();
 
+    //(*params.num_its)++;
+
     //if (num_triangles >= params.max_ray_triangles - 1) {
     //    optixTerminateRay();
     //    return;

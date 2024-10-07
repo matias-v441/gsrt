@@ -91,11 +91,59 @@ class GSRTMethod(Method):
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
         res_x, res_y = camera.item().image_sizes
 
-        res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),ray_directions.float().squeeze(0).contiguous())
+
+        import math
+        ntiles = 2
+        tilew = math.ceil(res_x/ntiles)
+        tileh = math.ceil(res_y/ntiles)
+        ray_origins_sq = ray_origins.reshape((1,res_y,res_x,3))
+        ray_directions_sq = ray_directions.reshape((1,res_y,res_x,3))
+        color = torch.zeros((res_y,res_x,3))
+        transmittance = torch.zeros((res_y,res_x,1))
+            
+        # time_ms = 0
+        # nit = 100
+        # for _ in range(nit):
+        #     for i in range(ntiles):
+        #         for j in range(ntiles):
+        #             xs = min(tilew*i,res_x)
+        #             xe = min(tilew*(i+1),res_x)
+        #             sx = xe-xs
+        #             ys = min(tileh*j,res_y)
+        #             ye = min(tileh*(j+1),res_y)
+        #             sy = ye-ys
+        #             tile_ray_orig = ray_origins_sq[:,ys:ye,xs:xe].reshape(1,sx*sy,3)
+        #             tile_ray_dir = ray_directions_sq[:,ys:ye,xs:xe].reshape(1,sx*sy,3)
+        #             res = self.tracer.trace_rays(tile_ray_orig.float().squeeze(0).contiguous(),tile_ray_dir.float().squeeze(0).contiguous())
+        #             color[ys:ye,xs:xe] = res["radiance"].cpu().reshape(sy,sx,3)
+        #             transmittance[ys:ye,xs:xe] = res["transmittance"].cpu().reshape(sy,sx,1)
+        #             time_ms += res["time_ms"]
+        # time_ms /= nit
+        # print(1000/time_ms, res_x, res_y)
+        # color = color.numpy()
+        # transmittance = transmittance.numpy()
+        # debug_map_0 = color
+        # debug_map_1 = color
+        
+
+        time_ms = 0
+        nit = 1
+        for i in range(nit):
+            res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),ray_directions.float().squeeze(0).contiguous())
+            time_ms += res["time_ms"]
+            #print(i,time_ms)
+            #print(res["num_its"])
+        time_ms /= nit
+        
         color = res["radiance"].cpu().reshape(res_y,res_x,3).numpy()
         transmittance = res["transmittance"].cpu().reshape(res_y,res_x)[:,:,None].repeat(1,1,3).numpy()
         debug_map_0 = res["debug_map_0"].cpu().reshape(res_x,res_y,3).numpy()
         debug_map_1 = res["debug_map_1"].cpu().reshape(res_x,res_y,3).numpy()
+        time_ms = res["time_ms"]
+        num_its = res["num_its"]
+        #print(num_its)
+        print(1000/time_ms, num_its/time_ms, res_x,res_y)
+        
         return {
             "color": color + transmittance,
             "transmittance": transmittance,

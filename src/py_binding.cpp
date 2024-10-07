@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <chrono>
 
 #include "gaussians_tracer.h"
 #include "utils/exception.h"
@@ -53,6 +54,9 @@ struct PyGaussiansTracer {
         const auto debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
         const auto debug_map_1 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
 
+        const auto num_its = torch::zeros({1,1}, torch::device(device).dtype(torch::kInt64));
+        using namespace std::chrono;
+        const auto frame_start = high_resolution_clock::now();
         tracer->trace_rays(
             num_rays,
             reinterpret_cast<float3 *>(ray_origins.data_ptr()),
@@ -60,11 +64,17 @@ struct PyGaussiansTracer {
             reinterpret_cast<float3 *>(radiance.data_ptr()),
             reinterpret_cast<float *>(transmittance.data_ptr()),
             reinterpret_cast<float3 *>(debug_map_0.data_ptr()),
-            reinterpret_cast<float3 *>(debug_map_1.data_ptr())
+            reinterpret_cast<float3 *>(debug_map_1.data_ptr()),
+            reinterpret_cast<unsigned long*>(num_its.data_ptr())
             );
+        const auto frame_end = high_resolution_clock::now();
+        const double ms_frame = duration_cast<milliseconds>(frame_end-frame_start).count();
 
         return py::dict("radiance"_a = radiance, "transmittance"_a = transmittance,
-                        "debug_map_0"_a = debug_map_0, "debug_map_1"_a = debug_map_1);
+                        "debug_map_0"_a = debug_map_0, "debug_map_1"_a = debug_map_1,
+                        "time_ms"_a = ms_frame,
+                        "num_its"_a = *reinterpret_cast<unsigned long*>(num_its.cpu().data_ptr())
+                        );
     }
 
     void load_gaussians(
