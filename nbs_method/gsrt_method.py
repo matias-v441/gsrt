@@ -127,9 +127,11 @@ class GSRTMethod(Method):
         
 
         time_ms = 0
-        nit = 1
+        nit = 100
         for i in range(nit):
-            res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),ray_directions.float().squeeze(0).contiguous())
+            res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
+                                         ray_directions.float().squeeze(0).contiguous(),
+                                         res_x, res_y)
             time_ms += res["time_ms"]
             #print(i,time_ms)
             #print(res["num_its"])

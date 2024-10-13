@@ -42,7 +42,8 @@ struct PyGaussiansTracer {
     }
 
     py::dict trace_rays(const torch::Tensor &ray_origins,
-                        const torch::Tensor &ray_directions) {
+                        const torch::Tensor &ray_directions,
+                        int width, int height) {
 
         torch::AutoGradMode enable_grad(false);
         CHECK_FLOAT_DIM(ray_origins,3);
@@ -57,16 +58,18 @@ struct PyGaussiansTracer {
         const auto num_its = torch::zeros({1,1}, torch::device(device).dtype(torch::kInt64));
         using namespace std::chrono;
         const auto frame_start = high_resolution_clock::now();
-        tracer->trace_rays(
-            num_rays,
-            reinterpret_cast<float3 *>(ray_origins.data_ptr()),
-            reinterpret_cast<float3 *>(ray_directions.data_ptr()),
-            reinterpret_cast<float3 *>(radiance.data_ptr()),
-            reinterpret_cast<float *>(transmittance.data_ptr()),
-            reinterpret_cast<float3 *>(debug_map_0.data_ptr()),
-            reinterpret_cast<float3 *>(debug_map_1.data_ptr()),
-            reinterpret_cast<unsigned long*>(num_its.data_ptr())
-            );
+        TracingParams tracing_params;
+        tracing_params.num_rays = num_rays;
+        tracing_params.width = width;
+        tracing_params.height = height;
+        tracing_params.ray_origins = reinterpret_cast<float3 *>(ray_origins.data_ptr());
+        tracing_params.ray_directions = reinterpret_cast<float3 *>(ray_directions.data_ptr());
+        tracing_params.radiance = reinterpret_cast<float3 *>(radiance.data_ptr());
+        tracing_params.transmittance = reinterpret_cast<float *>(transmittance.data_ptr());
+        tracing_params.debug_map_0 = reinterpret_cast<float3 *>(debug_map_0.data_ptr());
+        tracing_params.debug_map_1 = reinterpret_cast<float3 *>(debug_map_1.data_ptr());
+        tracing_params.num_its = reinterpret_cast<unsigned long*>(num_its.data_ptr());
+        tracer->trace_rays(tracing_params);
         const auto frame_end = high_resolution_clock::now();
         const double ms_frame = duration_cast<milliseconds>(frame_end-frame_start).count();
 

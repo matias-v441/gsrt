@@ -27,6 +27,20 @@ struct GaussiansData
     int sh_deg;
 };
 
+struct TracingParams
+{
+    size_t num_rays;
+    size_t width;
+    size_t height;
+    float3 *ray_origins;
+    float3 *ray_directions;
+    float3 *radiance;
+    float *transmittance;
+    float3 *debug_map_0;
+    float3 *debug_map_1;
+    unsigned long *num_its;
+};
+
 class GaussiansAS {
    public:
     GaussiansAS() noexcept;
@@ -123,14 +137,8 @@ class TraceRaysPipeline {
     }
 
     void trace_rays(const GaussiansAS *gaussians_structure,
-                    const size_t num_rays,
-                    const float3 *ray_origins,
-                    const float3 *ray_directions,
-                    float3 *radiance,
-                    float *transmittance,
-                    float3 *debug_map_0,
-                    float3 *debug_map_1,
-                    unsigned long *num_its);
+                    const TracingParams &tracing_params
+                    );
 
    private:
     // Context, streams, and accel structures are inherited
@@ -175,24 +183,10 @@ class GaussiansTracer {
         gaussians_structure = std::move(GaussiansAS(context, device, data));
     }
 
-    void trace_rays(const size_t num_rays,
-                    const float3 *ray_origins,
-                    const float3 *ray_directions,
-                    float3 *radiance,
-                    float *transmittance,
-                    float3 *debug_map_0,
-                    float3 *debug_map_1,
-                    unsigned long *num_its) {
+    void trace_rays(const TracingParams &tracing_params) {
         trace_rays_pipeline.trace_rays(
             &gaussians_structure,
-            num_rays,
-            ray_origins,
-            ray_directions,
-            radiance,
-            transmittance,
-            debug_map_0,
-            debug_map_1,
-            num_its);
+            tracing_params);
     }
 
    private:

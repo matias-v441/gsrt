@@ -46,18 +46,19 @@ constexpr int triagPerParticle = 20;
 constexpr float Tmin = 0.001;
 constexpr float respMin = 0.01f;
 
-__device__ float3 computeRadiance(unsigned int gs_id);
+__device__ float3 computeRadiance(unsigned int gs_id, const float3& ray_origin);
 
 extern "C" __global__ void __raygen__rg() {
 
     // Lookup our location within the launch grid
-    const uint3 idx = optixGetLaunchIndex();
+    const uint3 idxy = optixGetLaunchIndex();
     const uint3 dim = optixGetLaunchDimensions();
+    const int id = idxy.x + idxy.y*dim.x;
 
     // Map our launch idx to a screen location and create a ray from the camera
     // location through the screen
-    const float3 ray_origin = params.ray_origins[idx.x];
-    const float3 ray_direction = params.ray_directions[idx.x];
+    const float3 ray_origin = params.ray_origins[id];
+    const float3 ray_direction = params.ray_directions[id];
 
     Hit hits[chunk_size];
 
@@ -107,7 +108,7 @@ extern "C" __global__ void __raygen__rg() {
             if(hits[i].thit == FLT_MAX) break;
             last_thit = hits[i].thit;
             if(hits[i].resp < respMin) continue;
-            radiance += hits[i].resp*T*computeRadiance(hits[i].primId);
+            radiance += hits[i].resp*T*computeRadiance(hits[i].primId,ray_origin);
             T *= (1.-hits[i].resp);
             hits[i].thit = FLT_MAX;
         }
@@ -116,8 +117,8 @@ extern "C" __global__ void __raygen__rg() {
         
     } end_while:
     //printf("%d\n",k);
-    params.radiance[idx.x] = radiance;
-    params.transmittance[idx.x] = T;
+    params.radiance[id] = radiance;
+    params.transmittance[id] = T;
 }
 
 extern "C" __global__ void __miss__ms() {
@@ -142,7 +143,6 @@ __device__ Matrix3x3 construct_rotation(float4 vec){
 }
 
 __device__ void computeResponse(unsigned int gs_id, float& resp, float& tmax){
-    const uint3 idx = optixGetLaunchIndex();
     const float3 o = optixGetWorldRayOrigin();
     const float3 d = optixGetWorldRayDirection();
     const float3 mu = params.gs_xyz[gs_id];
@@ -179,13 +179,12 @@ __device__ const float SH_C3[] = {
 	-0.5900435899266435f
 };
 
-__device__ float3 computeRadiance(unsigned int gs_id){
+__device__ float3 computeRadiance(unsigned int gs_id, const float3 &ray_origin){
     const uint3 idx = optixGetLaunchIndex();
 
     //const float3 dir = -params.ray_directions[idx.x];
     const float3 mu = params.gs_xyz[gs_id];
-    const float3 o = params.ray_origins[idx.x];
-    const float3 dir = normalize(mu-o);
+    const float3 dir = normalize(mu-ray_origin);
 
     const float3* sh = params.gs_sh + gs_id*16;
     const int deg = params.sh_deg;

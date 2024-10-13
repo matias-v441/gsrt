@@ -366,14 +366,7 @@ TraceRaysPipeline::~TraceRaysPipeline() noexcept(false) {
 }
 
 void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
-                                   const size_t num_rays,
-                                   const float3 *ray_origins,
-                                   const float3 *ray_directions,
-                                   float3 *radiance,
-                                   float *transmittance,
-                                   float3 *debug_map_0,
-                                   float3 *debug_map_1,
-                                   unsigned long *num_its
+                                   const TracingParams &tracing_params
                                    ) {
     CUDA_CHECK(cudaSetDevice(device));
 
@@ -381,8 +374,8 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         Params params;
         params.handle = gaussians_structure->gas_handle();
 
-        params.ray_origins = ray_origins;
-        params.ray_directions = ray_directions;
+        params.ray_origins = tracing_params.ray_origins;
+        params.ray_directions = tracing_params.ray_directions;
 
         auto& gs = gaussians_structure->device_gaussians();
         params.num_gs = gs.numgs;
@@ -394,17 +387,20 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.sh_deg = gs.sh_deg;
         params.gs_normals = gs.normals;
 
-        params.radiance = radiance;
-        params.transmittance = transmittance;
-        params.debug_map_0 = debug_map_0;
-        params.debug_map_1 = debug_map_1;
-        params.num_its = num_its;
+        params.radiance = tracing_params.radiance;
+        params.transmittance = tracing_params.transmittance;
+        params.debug_map_0 = tracing_params.debug_map_0;
+        params.debug_map_1 = tracing_params.debug_map_1;
+        params.num_its = tracing_params.num_its;
 
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),
             &params, sizeof(params),
             cudaMemcpyHostToDevice));
-        OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt, num_rays, 1, 1));
+        OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt,
+                                tracing_params.width, tracing_params.height, 1));
+        //OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt,
+        //                        tracing_params.num_rays, 1, 1));
         CUDA_SYNC_CHECK();
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }
