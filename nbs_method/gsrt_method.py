@@ -92,15 +92,14 @@ class GSRTMethod(Method):
         res_x, res_y = camera.item().image_sizes
 
 
-        import math
-        ntiles = 2
-        tilew = math.ceil(res_x/ntiles)
-        tileh = math.ceil(res_y/ntiles)
-        ray_origins_sq = ray_origins.reshape((1,res_y,res_x,3))
-        ray_directions_sq = ray_directions.reshape((1,res_y,res_x,3))
-        color = torch.zeros((res_y,res_x,3))
-        transmittance = torch.zeros((res_y,res_x,1))
-            
+        # import math
+        # ntiles = 2
+        # tilew = math.ceil(res_x/ntiles)
+        # tileh = math.ceil(res_y/ntiles)
+        # ray_origins_sq = ray_origins.reshape((1,res_y,res_x,3))
+        # ray_directions_sq = ray_directions.reshape((1,res_y,res_x,3))
+        # color = torch.zeros((res_y,res_x,3))
+        # transmittance = torch.zeros((res_y,res_x,1))   
         # time_ms = 0
         # nit = 100
         # for _ in range(nit):
@@ -127,7 +126,7 @@ class GSRTMethod(Method):
         
 
         time_ms = 0
-        nit = 100
+        nit = 1
         for i in range(nit):
             res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
                                          ray_directions.float().squeeze(0).contiguous(),

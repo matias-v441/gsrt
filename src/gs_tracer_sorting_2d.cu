@@ -40,7 +40,8 @@ struct Hit{
     float resp;
 };
 
-constexpr int chunk_size = 32;
+constexpr int max_hit_id = 31;
+constexpr int max_chunk_size = 32;
 
 constexpr int triagPerParticle = 20;
 constexpr float Tmin = 0.001;
@@ -60,13 +61,13 @@ extern "C" __global__ void __raygen__rg() {
     const float3 ray_origin = params.ray_origins[id];
     const float3 ray_direction = params.ray_directions[id];
 
-    Hit hits[chunk_size];
+    Hit hits[max_chunk_size];
 
     unsigned int p_hits[2];
     Hit* hits_ptr = reinterpret_cast<Hit*>(hits);
     memcpy(p_hits, &hits_ptr, sizeof(void*));
 
-    for(int i = 0; i < chunk_size; ++i){
+    for(int i = 0; i < max_chunk_size; ++i){
         hits[i].thit = FLT_MAX;
     }
 
@@ -78,10 +79,12 @@ extern "C" __global__ void __raygen__rg() {
     float3 radiance = make_float3(0.f);
     float T = 1.f;
     constexpr float max_dist = 100.f;//1e16f; 
+    constexpr float delta_dist = 100.f;
     float min_dist = 0.f;
     int chunk_id = 0;
     int k = 0;
     while(T > Tmin && max_dist > min_dist){
+        float max_dist = min_dist + delta_dist;
         optixTrace(
             params.handle,
             ray_origin,
@@ -97,7 +100,7 @@ extern "C" __global__ void __raygen__rg() {
             p_hits[0],p_hits[1],p[2],p[3]);
         k++;
         float last_thit = FLT_MAX;
-        for(int i = 0; i < chunk_size; ++i){
+        for(int i = 0; i < max_chunk_size; ++i){
             // if(hits[i].thit == FLT_MAX // && i == chunk_size-1
             // ){
             //     if(chunk_id == 0){ //miss
@@ -112,7 +115,7 @@ extern "C" __global__ void __raygen__rg() {
             T *= (1.-hits[i].resp);
             hits[i].thit = FLT_MAX;
         }
-        min_dist = last_thit+eps;
+        min_dist = min(last_thit, max_dist);
         chunk_id++;
         
     } end_while:
@@ -251,25 +254,47 @@ extern "C" __global__ void __anyhit__ms() {
         return;
     }
 
+    if(optixGetRayTmax() > hits[max_chunk_size-1].thit){
+        optixIgnoreIntersection();
+        return;
+    }
+
     float resp,thit; 
     computeResponse(hitParticle,resp,thit);
-    
-    if(resp > respMin){
-        Hit hit;
-        hit.primId = hitParticle;
-        hit.resp = resp;
-        //hit.thit = optixGetRayTmax();
-        hit.thit = thit;
-        for(int i = 0; i < chunk_size; ++i){
-            if(hit.thit < hits[i].thit){
-                Hit h = hit;
-                hit = hits[i];
-                hits[i] = h;
-            }
-        }
-        if(hits[chunk_size-1].thit == FLT_MAX)
-            optixIgnoreIntersection();
-    }else{
+
+    if(thit > hits[max_chunk_size-1].thit){
         optixIgnoreIntersection();
+        return;
     }
+    
+    if(resp < respMin){
+        optixIgnoreIntersection();
+        return;
+    }
+
+
+    Hit hit;
+    hit.primId = hitParticle;
+    hit.resp = resp;
+    //hit.thit = optixGetRayTmax();
+    hit.thit = thit;
+    int last_id = 0;
+    for(int i = 0; i < max_chunk_size; ++i){
+        if(hit.thit < hits[i].thit){
+            Hit h = hit;
+            hit = hits[i];
+            hits[i] = h;
+        }
+        last_id = i;
+        //if(hit.thit == FLT_MAX) break;
+    }
+    const uint3 idxy = optixGetLaunchIndex();
+    
+    optixIgnoreIntersection();
+    //if(hits[max_chunk_size-1].thit == FLT_MAX){
+    //    //printf("ign %d %d %d %f\n",idxy.x,idxy.y,last_id,hits[last_id-1].thit - optixGetRayTmin());
+    //    optixIgnoreIntersection();
+    //}else{
+    //    //printf("full %d %d %d %f\n",idxy.x,idxy.y,last_id,hits[max_chunk_size-1].thit - optixGetRayTmin());
+    //}
 }
