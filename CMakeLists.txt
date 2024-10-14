@@ -94,6 +94,8 @@ CUDA_WRAP_SRCS(traversal PTX gaussians_tracer_ptx
     #src/gaussians_tracer.cu
     #src/gs_tracer_sorting.cu
     src/gs_tracer_sorting_2d.cu
+    #src/gs_tracer_sorting_2d_merge.cu
+    #src/gs_tracer_chit_2d.cu
     OPTIONS -rdc true)
 cuda_compile_and_embed(ptx_code_file gaussians_tracer_ptx)
 
