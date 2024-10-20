@@ -106,17 +106,27 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
     // Create module
     //
     {
-        unsigned int payloadFlags =
+        unsigned int payload_flags =
              OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_WRITE | OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ 
             | OPTIX_PAYLOAD_SEMANTICS_AH_READ  | OPTIX_PAYLOAD_SEMANTICS_AH_WRITE
             | OPTIX_PAYLOAD_SEMANTICS_MS_READ  | OPTIX_PAYLOAD_SEMANTICS_MS_WRITE
             | OPTIX_PAYLOAD_SEMANTICS_CH_READ  | OPTIX_PAYLOAD_SEMANTICS_CH_WRITE
             ;
-        unsigned int semantics[4] = {payloadFlags,payloadFlags,payloadFlags,payloadFlags,};
+        constexpr int payload_size = 8;
+        unsigned int semantics[payload_size] = {
+                                    payload_flags,
+                                    payload_flags,
+                                    payload_flags,
+                                    payload_flags,
+                                    payload_flags,
+                                    payload_flags,
+                                    payload_flags,
+                                    payload_flags,
+        };
 
         OptixPayloadType payloadType;
         payloadType.payloadSemantics = semantics;
-        payloadType.numPayloadValues = 4;
+        payloadType.numPayloadValues = payload_size;
 
         OptixModuleCompileOptions module_compile_options = {};
         module_compile_options.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
