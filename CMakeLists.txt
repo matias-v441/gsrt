@@ -93,7 +93,9 @@ CUDA_WRAP_SRCS(traversal PTX gaussians_tracer_ptx
     src/utils/vec_math.h
     #src/gaussians_tracer.cu
     #src/gs_tracer_sorting.cu
-    src/gs_tracer_sorting_2d.cu
+    #src/gs_tracer_sorting_2d.cu
+    #src/gs_tracer_sorting_2d_queue.cu
+    src/gs_tracer_bwd.cu
     #src/gs_tracer_sorting_2d_merge.cu
     #src/gs_tracer_chit_2d.cu
     OPTIONS -rdc true)

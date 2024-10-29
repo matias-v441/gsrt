@@ -24,6 +24,8 @@ struct Params {
 
     unsigned long* num_its;
 
+    bool compute_grad;
+
     OptixTraversableHandle handle;
 };
 

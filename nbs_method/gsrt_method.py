@@ -146,7 +146,7 @@ class GSRTMethod(Method):
         print(1000/time_ms, num_its/time_ms, res_x,res_y)
         
         return {
-            "color": color + transmittance,
+            "color": color,# + transmittance,
             "transmittance": transmittance,
             "debug_map_0": debug_map_0,
             "debug_map_1": debug_map_1,

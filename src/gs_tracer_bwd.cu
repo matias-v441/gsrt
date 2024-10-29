@@ -206,6 +206,7 @@ extern "C" __global__ void __raygen__rg() {
     while(hits_capacity <= hits_max_capacity){
         unsigned int n_hits_capacity = hits_capacity;
         optixTrace(
+            OPTIX_PAYLOAD_TYPE_ID_0,
             params.handle,
             ray_origin,
             ray_direction,
@@ -215,17 +216,11 @@ extern "C" __global__ void __raygen__rg() {
             OptixVisibilityMask(255),  // Specify always visible
             OPTIX_RAY_FLAG_NONE,
             0,  // SBT offset   -- See SBT discussion
-            1,  // SBT stride   -- See SBT discussion
+            2,  // SBT stride   -- See SBT discussion
             0,  // missSBTIndex -- See SBT discussion
             p[0],p[1],p[2],p[3],p_hits[0],p_hits[1],hits_size,n_hits_capacity);
 
         if(n_hits_capacity == hits_capacity){
-            while(hits_size!=0 && payload.transmittance > Tmin){
-                const Hit& chit = hits[0];
-                payload.radiance += computeRadiance(chit.primId,ray_origin)*chit.resp*payload.transmittance;
-                payload.transmittance *= (1.-chit.resp);
-                popHit(hits,hits_size);
-            }
             break;   
         }
         hits_capacity = n_hits_capacity;
@@ -233,22 +228,47 @@ extern "C" __global__ void __raygen__rg() {
         payload.radiance = make_float3(0.f);
         payload.transmittance = 1.f;
     }
+    while(hits_size!=0 && payload.transmittance > Tmin){
+        const Hit& chit = hits[0];
+        payload.radiance += computeRadiance(chit.primId,ray_origin)*chit.resp*payload.transmittance;
+        payload.transmittance *= (1.-chit.resp);
+        popHit(hits,hits_size);
+    }
     params.radiance[id] = payload.radiance;
     params.transmittance[id] = payload.transmittance;
+
+    if(params.compute_grad){
+
+        Payload lead_payload{};
+        lead_payload.radiance = make_float3(0.f);
+        lead_payload.transmittance = 1.f;
+        unsigned int* lp = reinterpret_cast<unsigned int *>(&lead_payload);
+
+        unsigned int n_hits_capacity = hits_capacity;
+        optixTrace(
+            OPTIX_PAYLOAD_TYPE_ID_1,
+            params.handle,
+            ray_origin,
+            ray_direction,
+            min_dist,                      // Min intersection distance
+            max_dist,                     // Max intersection distance
+            0.0f,                      // rayTime -- used for motion blur
+            OptixVisibilityMask(255),  // Specify always visible
+            OPTIX_RAY_FLAG_NONE,
+            1,  // SBT offset   -- See SBT discussion
+            2,  // SBT stride   -- See SBT discussion
+            0,  // missSBTIndex -- See SBT discussion
+            lp[0],lp[1],lp[2],lp[3],
+            p_hits[0],p_hits[1],hits_size,n_hits_capacity,
+            p[0],p[1],p[2],p[3]
+            );
+        
+    }
 }
 
-extern "C" __global__ void __miss__ms() {
-    const uint3 idx = optixGetLaunchIndex();
-    //params.radiance[idx.x] = make_float3(0.,0.,1.);
-}
+extern "C" __global__ void __anyhit__fwd() {
 
-extern "C" __global__ void __closesthit__ms() {
-}
-
-
-extern "C" __global__ void __anyhit__ms() {
-
-    //(*params.num_its)++;
+    optixSetPayloadTypes(OPTIX_PAYLOAD_TYPE_ID_0);
 
     Payload payload = getPayload();
 
@@ -261,8 +281,6 @@ extern "C" __global__ void __anyhit__ms() {
     unsigned int hitq_size = optixGetPayload_6();
     unsigned int hitq_capacity = optixGetPayload_7();
 
-    //if(hitq_size!=0)
-    //    printf("%d\n",hitq_size);
     if(hitq_size == hitq_capacity){
         const Hit &chit = hitq[0];
         payload.radiance += computeRadiance(chit.primId,optixGetWorldRayOrigin())
@@ -306,4 +324,10 @@ extern "C" __global__ void __anyhit__ms() {
     optixSetPayload_6(hitq_size);
 
     optixIgnoreIntersection();
+}
+
+extern "C" __global__ void __anyhit__bwd() {
+
+    optixSetPayloadTypes(OPTIX_PAYLOAD_TYPE_ID_1);
+
 }

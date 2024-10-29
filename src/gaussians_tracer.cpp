@@ -105,34 +105,63 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
     //
     // Create module
     //
+    std::vector<OptixPayloadType> payloadTypes;
     {
         unsigned int payload_flags =
-             OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_WRITE | OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ 
+             OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ | OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_WRITE 
             | OPTIX_PAYLOAD_SEMANTICS_AH_READ  | OPTIX_PAYLOAD_SEMANTICS_AH_WRITE
-            | OPTIX_PAYLOAD_SEMANTICS_MS_READ  | OPTIX_PAYLOAD_SEMANTICS_MS_WRITE
-            | OPTIX_PAYLOAD_SEMANTICS_CH_READ  | OPTIX_PAYLOAD_SEMANTICS_CH_WRITE
+            //| OPTIX_PAYLOAD_SEMANTICS_MS_READ  | OPTIX_PAYLOAD_SEMANTICS_MS_WRITE
+            //| OPTIX_PAYLOAD_SEMANTICS_CH_READ  | OPTIX_PAYLOAD_SEMANTICS_CH_WRITE
             ;
-        constexpr int payload_size = 8;
-        unsigned int semantics[payload_size] = {
+        constexpr int payload_size_fwd = 8;
+        unsigned int semantics_fwd[payload_size_fwd] = {
                                     payload_flags,
                                     payload_flags,
                                     payload_flags,
                                     payload_flags,
+
+                                    payload_flags,
+                                    payload_flags,
+
+                                    payload_flags,
+
+                                    payload_flags,
+        };
+        constexpr int payload_size_bwd = 12;
+        unsigned int semantics_bwd[payload_size_bwd] = {
+                                    payload_flags,
+                                    payload_flags,
+                                    payload_flags,
+                                    payload_flags,
+
+                                    payload_flags,
+                                    payload_flags,
+
+                                    payload_flags,
+
+                                    payload_flags,
+
                                     payload_flags,
                                     payload_flags,
                                     payload_flags,
                                     payload_flags,
         };
 
-        OptixPayloadType payloadType;
-        payloadType.payloadSemantics = semantics;
-        payloadType.numPayloadValues = payload_size;
+        OptixPayloadType payloadTypeFwd;
+        payloadTypeFwd.payloadSemantics = semantics_fwd;
+        payloadTypeFwd.numPayloadValues = payload_size_fwd;
+        payloadTypes.push_back(payloadTypeFwd);
+
+        OptixPayloadType payloadTypeBwd;
+        payloadTypeBwd.payloadSemantics = semantics_bwd;
+        payloadTypeBwd.numPayloadValues = payload_size_bwd;
+        payloadTypes.push_back(payloadTypeBwd);
 
         OptixModuleCompileOptions module_compile_options = {};
         module_compile_options.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
         module_compile_options.optLevel = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
-        module_compile_options.numPayloadTypes = 1;
-        module_compile_options.payloadTypes = &payloadType;
+        module_compile_options.numPayloadTypes = payloadTypes.size();
+        module_compile_options.payloadTypes = payloadTypes.data();
 
 // The following is not supported in Optix 7.2
 // #define XSTR(x) STR(x)
@@ -189,9 +218,9 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
     // Create program groups
     //
     {
-        OptixProgramGroupOptions program_group_options = {};  // Initialize to zeros
+        OptixProgramGroupOptions empty_program_group_options = {};
 
-        OptixProgramGroupDesc raygen_prog_group_desc = {};  //
+        OptixProgramGroupDesc raygen_prog_group_desc = {};
         raygen_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
         raygen_prog_group_desc.raygen.module = module;
         raygen_prog_group_desc.raygen.entryFunctionName = "__raygen__rg";
@@ -200,40 +229,62 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
             context,
             &raygen_prog_group_desc,
             1,  // num program groups
-            &program_group_options,
+            &empty_program_group_options,
             log,
             &sizeof_log,
             &raygen_prog_group));
 
         OptixProgramGroupDesc miss_prog_group_desc = {};
         miss_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
-        miss_prog_group_desc.miss.module = module;
-        miss_prog_group_desc.miss.entryFunctionName = "__miss__ms";
-        sizeof_log = sizeof(log);
+        miss_prog_group_desc.miss.module = nullptr;//module;
+        miss_prog_group_desc.miss.entryFunctionName = nullptr;//"__miss__ms";
+        //sizeof_log = sizeof(log);
         OPTIX_CHECK_LOG(optixProgramGroupCreate(
             context,
             &miss_prog_group_desc,
             1,  // num program groups
-            &program_group_options,
-            log,
-            &sizeof_log,
+            &empty_program_group_options,
+            //log,
+            //&sizeof_log,
+            nullptr,
+            nullptr,
             &miss_prog_group));
 
+        OptixProgramGroupOptions hg_fwd_program_group_options = {};
+        hg_fwd_program_group_options.payloadType = &payloadTypes[0];
         OptixProgramGroupDesc hitgroup_prog_group_desc = {};
         hitgroup_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
-        hitgroup_prog_group_desc.hitgroup.moduleCH = module;
+        hitgroup_prog_group_desc.hitgroup.moduleCH = nullptr;
         hitgroup_prog_group_desc.hitgroup.moduleAH = module;
-        hitgroup_prog_group_desc.hitgroup.entryFunctionNameCH = "__closesthit__ms";
-        hitgroup_prog_group_desc.hitgroup.entryFunctionNameAH = "__anyhit__ms";
+        hitgroup_prog_group_desc.hitgroup.entryFunctionNameCH = nullptr;
+        hitgroup_prog_group_desc.hitgroup.entryFunctionNameAH = "__anyhit__fwd";
         sizeof_log = sizeof(log);
         OPTIX_CHECK_LOG(optixProgramGroupCreate(
             context,
             &hitgroup_prog_group_desc,
             1,  // num program groups
-            &program_group_options,
+            &hg_fwd_program_group_options,
             log,
             &sizeof_log,
             &hitgroup_prog_group));
+
+        OptixProgramGroupOptions hg_bwd_program_group_options = {};
+        hg_bwd_program_group_options.payloadType = &payloadTypes[1];
+        OptixProgramGroupDesc bwd_hitgroup_prog_group_desc = {};
+        bwd_hitgroup_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+        bwd_hitgroup_prog_group_desc.hitgroup.moduleCH = nullptr;
+        bwd_hitgroup_prog_group_desc.hitgroup.moduleAH = module;
+        bwd_hitgroup_prog_group_desc.hitgroup.entryFunctionNameCH = nullptr;
+        bwd_hitgroup_prog_group_desc.hitgroup.entryFunctionNameAH = "__anyhit__bwd";
+        sizeof_log = sizeof(log);
+        OPTIX_CHECK_LOG(optixProgramGroupCreate(
+            context,
+            &bwd_hitgroup_prog_group_desc,
+            1,  // num program groups
+            &hg_bwd_program_group_options,
+            log,
+            &sizeof_log,
+            &bwd_hitgroup_prog_group));
     }
 
     //
@@ -241,7 +292,12 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
     //
     {
         const uint32_t max_trace_depth = 1;
-        OptixProgramGroup program_groups[] = {raygen_prog_group, miss_prog_group, hitgroup_prog_group};
+        OptixProgramGroup program_groups[] = {
+            raygen_prog_group,
+            miss_prog_group,
+            hitgroup_prog_group,
+            bwd_hitgroup_prog_group
+            };
 
         OptixPipelineLinkOptions pipeline_link_options = {};
         pipeline_link_options.maxTraceDepth = max_trace_depth;
@@ -301,24 +357,33 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
             miss_record_size,
             cudaMemcpyHostToDevice));
 
-        CUdeviceptr hitgroup_record;
-        size_t hitgroup_record_size = sizeof(HitGroupSbtRecord);
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&hitgroup_record), hitgroup_record_size));
+        std::vector<HitGroupSbtRecord> hg_records;
         HitGroupSbtRecord hg_sbt;
         OPTIX_CHECK(optixSbtRecordPackHeader(hitgroup_prog_group, &hg_sbt));
+        hg_records.push_back(hg_sbt);
+        HitGroupSbtRecord bwd_hg_sbt;
+        OPTIX_CHECK(optixSbtRecordPackHeader(bwd_hitgroup_prog_group, &bwd_hg_sbt));
+        hg_records.push_back(bwd_hg_sbt);
+
+        CUdeviceptr hitgroup_records_base;
+        size_t hitgroup_record_size = sizeof(HitGroupSbtRecord);
+        CUDA_CHECK(cudaMalloc(
+            reinterpret_cast<void **>(&hitgroup_records_base),
+            hitgroup_record_size*hg_records.size()));
         CUDA_CHECK(cudaMemcpy(
-            reinterpret_cast<void *>(hitgroup_record),
-            &hg_sbt,
-            hitgroup_record_size,
+            reinterpret_cast<void *>(hitgroup_records_base),
+            hg_records.data(),
+            hitgroup_record_size*hg_records.size(),
             cudaMemcpyHostToDevice));
+
 
         sbt.raygenRecord = raygen_record;
         sbt.missRecordBase = miss_record;
         sbt.missRecordStrideInBytes = sizeof(MissSbtRecord);
         sbt.missRecordCount = 1;
-        sbt.hitgroupRecordBase = hitgroup_record;
+        sbt.hitgroupRecordBase = hitgroup_records_base;
         sbt.hitgroupRecordStrideInBytes = sizeof(HitGroupSbtRecord);
-        sbt.hitgroupRecordCount = 1;
+        sbt.hitgroupRecordCount = hg_records.size();
     }
 
     {
@@ -335,6 +400,7 @@ TraceRaysPipeline::TraceRaysPipeline(TraceRaysPipeline &&other) noexcept
       raygen_prog_group(std::exchange(other.raygen_prog_group, nullptr)),
       miss_prog_group(std::exchange(other.miss_prog_group, nullptr)),
       hitgroup_prog_group(std::exchange(other.hitgroup_prog_group, nullptr)),
+      bwd_hitgroup_prog_group(std::exchange(other.bwd_hitgroup_prog_group, nullptr)),
       module(std::exchange(other.module, nullptr)),
       sbt(std::exchange(other.sbt, {})),
       stream(std::exchange(other.stream, nullptr)),
@@ -371,6 +437,8 @@ TraceRaysPipeline::~TraceRaysPipeline() noexcept(false) {
         OPTIX_CHECK(optixProgramGroupDestroy(std::exchange(miss_prog_group, nullptr)));
     if (hitgroup_prog_group != nullptr)
         OPTIX_CHECK(optixProgramGroupDestroy(std::exchange(hitgroup_prog_group, nullptr)));
+    if (bwd_hitgroup_prog_group != nullptr)
+        OPTIX_CHECK(optixProgramGroupDestroy(std::exchange(bwd_hitgroup_prog_group, nullptr)));
     if (module != nullptr)
         OPTIX_CHECK(optixModuleDestroy(std::exchange(module, nullptr)));
 }
@@ -402,6 +470,8 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.debug_map_0 = tracing_params.debug_map_0;
         params.debug_map_1 = tracing_params.debug_map_1;
         params.num_its = tracing_params.num_its;
+
+        params.compute_grad = true;
 
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),

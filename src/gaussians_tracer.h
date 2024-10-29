@@ -155,6 +155,7 @@ class TraceRaysPipeline {
     OptixProgramGroup raygen_prog_group = nullptr;
     OptixProgramGroup miss_prog_group = nullptr;
     OptixProgramGroup hitgroup_prog_group = nullptr;
+    OptixProgramGroup bwd_hitgroup_prog_group = nullptr;
     float eps = 1e-6;
 
     static std::string load_ptx_data() {
