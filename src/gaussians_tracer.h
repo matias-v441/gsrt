@@ -34,11 +34,20 @@ struct TracingParams
     size_t height;
     float3 *ray_origins;
     float3 *ray_directions;
+
     float3 *radiance;
     float *transmittance;
     float3 *debug_map_0;
     float3 *debug_map_1;
-    unsigned long *num_its;
+    unsigned long long *num_its;
+    unsigned long long *num_its_bwd;
+
+    bool compute_grad;
+    float3 *grad_xyz;
+    float4 *grad_rotation;
+    float3 *grad_scale;
+    float *grad_opacity;
+    float3 *grad_sh;
 };
 
 class GaussiansAS {

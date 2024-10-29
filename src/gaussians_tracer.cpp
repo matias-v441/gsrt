@@ -127,7 +127,7 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
 
                                     payload_flags,
         };
-        constexpr int payload_size_bwd = 12;
+        constexpr int payload_size_bwd = 11;
         unsigned int semantics_bwd[payload_size_bwd] = {
                                     payload_flags,
                                     payload_flags,
@@ -135,8 +135,6 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
                                     payload_flags,
 
                                     payload_flags,
-                                    payload_flags,
-
                                     payload_flags,
 
                                     payload_flags,
@@ -470,8 +468,14 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.debug_map_0 = tracing_params.debug_map_0;
         params.debug_map_1 = tracing_params.debug_map_1;
         params.num_its = tracing_params.num_its;
+        params.num_its_bwd = tracing_params.num_its_bwd;
 
-        params.compute_grad = true;
+        params.compute_grad = tracing_params.compute_grad;
+        params.grad_xyz = tracing_params.grad_xyz;
+        params.grad_rotation = tracing_params.grad_rotation;
+        params.grad_scale = tracing_params.grad_scale;
+        params.grad_opacity = tracing_params.grad_opacity;
+        params.grad_sh = tracing_params.grad_sh;
 
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),
@@ -687,7 +691,7 @@ void GaussiansAS::build(const GaussiansData& data) {
         reinterpret_cast<void **>(&d_temp_buffer_gas),
         gas_buffer_sizes.tempSizeInBytes));
 
-    std::cout << "GAS size " << gas_buffer_sizes.outputSizeInBytes/1024.f/1024.f << " MiB" << std::endl;
+    //std::cout << "GAS size " << gas_buffer_sizes.outputSizeInBytes/1024.f/1024.f << " MiB" << std::endl;
 
     CUDA_CHECK(cudaMalloc(
         reinterpret_cast<void **>(&d_gas_output_buffer),
