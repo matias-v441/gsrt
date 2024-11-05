@@ -477,6 +477,10 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.grad_opacity = tracing_params.grad_opacity;
         params.grad_sh = tracing_params.grad_sh;
 
+        auto& sbs = gaussians_structure->device_scene_buffers();
+        params.rad_clamped = sbs.rad_clamped;
+        params.rad_sh = sbs.rad_sh;
+
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),
             &params, sizeof(params),
@@ -507,7 +511,8 @@ GaussiansAS::GaussiansAS(GaussiansAS &&other) noexcept
       d_gas_output_buffer(std::exchange(other.d_gas_output_buffer, 0)),
       d_vertices(std::exchange(other.d_vertices, 0)),
       d_triangles(std::exchange(other.d_triangles, 0)),
-      d_gaussians(std::exchange(other.d_gaussians, {})) {}
+      d_gaussians(std::exchange(other.d_gaussians, {})),
+      d_scene_buffers(std::exchange(other.d_scene_buffers, {})) {}
 
 void GaussiansAS::release() {
     bool device_set = false;
@@ -528,6 +533,8 @@ void GaussiansAS::release() {
     device_free(d_gaussians.opacity);
     device_free(d_gaussians.sh);
     device_free(d_gaussians.normals);
+    device_free(d_scene_buffers.rad_clamped);
+    device_free(d_scene_buffers.rad_sh);
 }
 
 GaussiansAS::~GaussiansAS() noexcept(false) {
@@ -657,6 +664,10 @@ void GaussiansAS::build(const GaussiansData& data) {
     toDevice(d_gaussians.opacity, data.opacity, data.numgs*sizeof(float));
     toDevice(d_gaussians.sh, data.sh, data.numgs*sizeof(float3)*16);
     toDevice(d_gaussians.normals, normals.data(), normals.size()*sizeof(float3));
+
+    // Allocate buffers of scene size 
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_scene_buffers.rad_clamped), data.numgs*3*sizeof(bool)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_scene_buffers.rad_sh), data.numgs*sizeof(float3)));
 
     // Use default options for simplicity.  In a real use case we would want to
     // enable compaction, etc

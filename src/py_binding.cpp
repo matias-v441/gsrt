@@ -74,13 +74,16 @@ struct PyGaussiansTracer {
         tracing_params.num_its_bwd = reinterpret_cast<unsigned long long*>(num_its_bwd.data_ptr());
 
         tracing_params.compute_grad = compute_grad;
-        torch::Tensor grad_xyz;
-        torch::Tensor grad_opacity;
+
+        torch::Tensor grad_xyz,grad_opacity,grad_sh;
         if(compute_grad){
-            grad_xyz = torch::zeros({(long)particles.numgs, 3}, torch::device(device).dtype(torch::kFloat32));
+            grad_xyz = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
             grad_opacity = torch::zeros({(long)particles.numgs}, torch::device(device).dtype(torch::kFloat32));
+            grad_sh = torch::zeros({(long)particles.numgs,16,3}, torch::device(device).dtype(torch::kFloat32));
+            grad_sh = grad_sh.contiguous();
             tracing_params.grad_xyz = reinterpret_cast<float3 *>(grad_xyz.data_ptr());
             tracing_params.grad_opacity = reinterpret_cast<float*>(grad_opacity.data_ptr());
+            tracing_params.grad_sh = reinterpret_cast<float3*>(grad_sh.data_ptr());
         }
         tracer->trace_rays(tracing_params);
 
@@ -93,7 +96,8 @@ struct PyGaussiansTracer {
                         "num_its"_a = *reinterpret_cast<unsigned long*>(num_its.cpu().data_ptr()),
                         "num_its_bwd"_a = *reinterpret_cast<unsigned long*>(num_its_bwd.cpu().data_ptr()),
                         "grad_xyz"_a = grad_xyz,
-                        "grad_opacity"_a = grad_opacity
+                        "grad_opacity"_a = grad_opacity,
+                        "grad_sh"_a = grad_sh
                         );
     }
 

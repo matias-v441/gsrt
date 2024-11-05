@@ -55,7 +55,15 @@ plt.figure()
 plt.imshow(radiance)
 
 grad_opacity = out["grad_opacity"].cpu()
-print(grad_opacity)
+print(part_opac.shape, grad_opacity.shape, grad_opacity)
+grad_xyz = out["grad_xyz"].cpu()
+print(grad_xyz.shape,part_xyz.shape,grad_xyz)
+grad_sh = out["grad_sh"].cpu()
+print(part_sh.shape,grad_sh.shape,grad_sh)
+# grad_scale = out["grad_scale"].cpu()
+# print(grad_scale)
+# grad_rot = out["grad_rot"].cpu()
+# print(grad_rot)
 
 #%%
 class _TracerFunction(torch.autograd.Function):

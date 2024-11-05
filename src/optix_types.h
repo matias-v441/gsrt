@@ -33,6 +33,9 @@ struct Params {
     float* grad_opacity;
     float3* grad_sh;
 
+    bool* rad_clamped;
+    float3* rad_sh;
+
     OptixTraversableHandle handle;
 };
 

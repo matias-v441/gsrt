@@ -50,6 +50,12 @@ struct TracingParams
     float3 *grad_sh;
 };
 
+struct SceneBuffers{
+
+    bool* rad_clamped;
+    float3* rad_sh;
+};
+
 class GaussiansAS {
    public:
     GaussiansAS() noexcept;
@@ -99,6 +105,10 @@ class GaussiansAS {
         return d_gaussians;
     }
 
+    const SceneBuffers& device_scene_buffers() const{
+        return d_scene_buffers;
+    }
+
    private:
     void build(const GaussiansData& gaussians);
 
@@ -110,6 +120,7 @@ class GaussiansAS {
     CUdeviceptr d_vertices = 0;
     CUdeviceptr d_triangles = 0;
     GaussiansData d_gaussians{};
+    SceneBuffers d_scene_buffers{};
 };
 
 

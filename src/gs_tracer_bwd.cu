@@ -2,6 +2,7 @@
 
 #include "optix_types.h"
 #include "utils/Matrix.h"
+#include "utils/auxiliary.h"
 
 #include <vector>
 #include <float.h>
@@ -26,31 +27,10 @@ __device__ Matrix3x3 construct_rotation(float4 vec){
     return R;
 }
 
+__device__ void compute_radiance(unsigned int gs_id, const float3 &ray_origin,
+     const float3& ray_direction, float3& rad, bool *clamped){
 
-// Spherical harmonics coefficients
-__device__ const float SH_C0 = 0.28209479177387814f;
-__device__ const float SH_C1 = 0.4886025119029199f;
-__device__ const float SH_C2[] = {
-	1.0925484305920792f,
-	-1.0925484305920792f,
-	0.31539156525252005f,
-	-1.0925484305920792f,
-	0.5462742152960396f
-};
-__device__ const float SH_C3[] = {
-	-0.5900435899266435f,
-	2.890611442640554f,
-	-0.4570457994644658f,
-	0.3731763325901154f,
-	-0.4570457994644658f,
-	1.445305721320277f,
-	-0.5900435899266435f
-};
-
-__device__ float3 compute_radiance(unsigned int gs_id, const float3 &ray_origin){
-    const uint3 idx = optixGetLaunchIndex();
-
-    //const float3 dir = -params.ray_directions[idx.x];
+    //const float3 dir = -ray_direction;
     const float3 mu = params.gs_xyz[gs_id];
     const float3 dir = normalize(mu-ray_origin);
 
@@ -92,7 +72,169 @@ __device__ float3 compute_radiance(unsigned int gs_id, const float3 &ray_origin)
 	}
 	result += make_float3(.5f);
 
-    return result;
+	clamped[3 * gs_id + 0] = (result.x < 0);
+	clamped[3 * gs_id + 1] = (result.y < 0);
+	clamped[3 * gs_id + 2] = (result.z < 0);
+
+	rad = {max(result.x,0.f),max(result.y,0.f),max(result.z,0.f)};
+}
+
+__device__ __forceinline__ void atomicAdd_float3(float3 &acc, const float3 &val){
+    atomicAdd(&acc.x,val.x);
+    atomicAdd(&acc.y,val.y);
+    atomicAdd(&acc.z,val.z);
+}
+
+
+// Backward pass for conversion of spherical harmonics to RGB for
+// each Gaussian.
+// __device__ void compute_radiance_bwd(int idx, int deg, int max_coeffs,
+//                      const glm::vec3* means, glm::vec3 campos, const float* shs,
+//                      const bool* clamped, const glm::vec3* dL_dcolor,
+//                      glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
+__device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin, 
+    const float3& grad_color, float3& grad_xyz, const bool* clamped)
+{
+
+	// same as forward -----
+
+    //const float3 dir = -params.ray_directions[idx.x];
+    const float3 mu = params.gs_xyz[gs_id];
+    const float3 dir = normalize(mu-ray_origin);
+
+    const float3* sh = params.gs_sh + gs_id*16;
+    const int deg = params.sh_deg;
+    // ---------------------
+
+	// Use PyTorch rule for clamping: if clamping was applied,
+	// gradient becomes 0.
+	float3 dL_dRGB = grad_color;
+	dL_dRGB.x *= clamped[3 * gs_id + 0] ? 0.f : 1.f;
+	dL_dRGB.y *= clamped[3 * gs_id + 1] ? 0.f : 1.f;
+	dL_dRGB.z *= clamped[3 * gs_id + 2] ? 0.f : 1.f;
+
+	float3 dRGBdx{0.f, 0.f, 0.f};
+	float3 dRGBdy{0.f, 0.f, 0.f};
+	float3 dRGBdz{0.f, 0.f, 0.f};
+	float x = dir.x;
+	float y = dir.y;
+	float z = dir.z;
+
+	// Target location for this Gaussian to write SH gradients to
+    float3 *dL_dsh = params.grad_sh + gs_id*16;
+
+	// No tricks here, just high school-level calculus.
+	float dRGBdsh0 = SH_C0;
+	dL_dsh[0] = dRGBdsh0 * dL_dRGB;
+	if (deg > 0)
+	{
+		float dRGBdsh1 = -SH_C1 * y;
+		float dRGBdsh2 = SH_C1 * z;
+		float dRGBdsh3 = -SH_C1 * x;
+
+        // If color function is view dependant we might accumulate grad_color for each view instead
+        // if it is ray dependant we should accumulate grad_sh directly
+
+		//dL_dsh[1] = dRGBdsh1 * dL_dRGB;
+		//dL_dsh[2] = dRGBdsh2 * dL_dRGB;
+		//dL_dsh[3] = dRGBdsh3 * dL_dRGB;
+        atomicAdd_float3(dL_dsh[1], dRGBdsh1 * dL_dRGB);
+		atomicAdd_float3(dL_dsh[2], dRGBdsh2 * dL_dRGB);
+		atomicAdd_float3(dL_dsh[3], dRGBdsh3 * dL_dRGB);
+
+		dRGBdx = -SH_C1 * sh[3];
+		dRGBdy = -SH_C1 * sh[1];
+		dRGBdz = SH_C1 * sh[2];
+
+		if (deg > 1)
+		{
+			float xx = x * x, yy = y * y, zz = z * z;
+			float xy = x * y, yz = y * z, xz = x * z;
+
+			float dRGBdsh4 = SH_C2[0] * xy;
+			float dRGBdsh5 = SH_C2[1] * yz;
+			float dRGBdsh6 = SH_C2[2] * (2.f * zz - xx - yy);
+			float dRGBdsh7 = SH_C2[3] * xz;
+			float dRGBdsh8 = SH_C2[4] * (xx - yy);
+			//dL_dsh[4] = dRGBdsh4 * dL_dRGB;
+			//dL_dsh[5] = dRGBdsh5 * dL_dRGB;
+			//dL_dsh[6] = dRGBdsh6 * dL_dRGB;
+			//dL_dsh[7] = dRGBdsh7 * dL_dRGB;
+			//dL_dsh[8] = dRGBdsh8 * dL_dRGB;
+            atomicAdd_float3(dL_dsh[4], dRGBdsh4 * dL_dRGB);
+			atomicAdd_float3(dL_dsh[5], dRGBdsh5 * dL_dRGB);
+			atomicAdd_float3(dL_dsh[6], dRGBdsh6 * dL_dRGB);
+			atomicAdd_float3(dL_dsh[7], dRGBdsh7 * dL_dRGB);
+			atomicAdd_float3(dL_dsh[8], dRGBdsh8 * dL_dRGB);
+
+			dRGBdx += SH_C2[0] * y * sh[4] + SH_C2[2] * 2.f * -x * sh[6] + SH_C2[3] * z * sh[7] + SH_C2[4] * 2.f * x * sh[8];
+			dRGBdy += SH_C2[0] * x * sh[4] + SH_C2[1] * z * sh[5] + SH_C2[2] * 2.f * -y * sh[6] + SH_C2[4] * 2.f * -y * sh[8];
+			dRGBdz += SH_C2[1] * y * sh[5] + SH_C2[2] * 2.f * 2.f * z * sh[6] + SH_C2[3] * x * sh[7];
+
+			if (deg > 2)
+			{
+				float dRGBdsh9 = SH_C3[0] * y * (3.f * xx - yy);
+				float dRGBdsh10 = SH_C3[1] * xy * z;
+				float dRGBdsh11 = SH_C3[2] * y * (4.f * zz - xx - yy);
+				float dRGBdsh12 = SH_C3[3] * z * (2.f * zz - 3.f * xx - 3.f * yy);
+				float dRGBdsh13 = SH_C3[4] * x * (4.f * zz - xx - yy);
+				float dRGBdsh14 = SH_C3[5] * z * (xx - yy);
+				float dRGBdsh15 = SH_C3[6] * x * (xx - 3.f * yy);
+				//dL_dsh[9] = dRGBdsh9 * dL_dRGB;
+				//dL_dsh[10] = dRGBdsh10 * dL_dRGB;
+				//dL_dsh[11] = dRGBdsh11 * dL_dRGB;
+				//dL_dsh[12] = dRGBdsh12 * dL_dRGB;
+				//dL_dsh[13] = dRGBdsh13 * dL_dRGB;
+				//dL_dsh[14] = dRGBdsh14 * dL_dRGB;
+				//dL_dsh[15] = dRGBdsh15 * dL_dRGB;
+                atomicAdd_float3(dL_dsh[9], dRGBdsh9 * dL_dRGB);
+				atomicAdd_float3(dL_dsh[10], dRGBdsh10 * dL_dRGB);
+				atomicAdd_float3(dL_dsh[11], dRGBdsh11 * dL_dRGB);
+				atomicAdd_float3(dL_dsh[12], dRGBdsh12 * dL_dRGB);
+				atomicAdd_float3(dL_dsh[13], dRGBdsh13 * dL_dRGB);
+				atomicAdd_float3(dL_dsh[14], dRGBdsh14 * dL_dRGB);
+				atomicAdd_float3(dL_dsh[15], dRGBdsh15 * dL_dRGB);
+
+				dRGBdx += (
+					SH_C3[0] * sh[9] * 3.f * 2.f * xy +
+					SH_C3[1] * sh[10] * yz +
+					SH_C3[2] * sh[11] * -2.f * xy +
+					SH_C3[3] * sh[12] * -3.f * 2.f * xz +
+					SH_C3[4] * sh[13] * (-3.f * xx + 4.f * zz - yy) +
+					SH_C3[5] * sh[14] * 2.f * xz +
+					SH_C3[6] * sh[15] * 3.f * (xx - yy));
+
+				dRGBdy += (
+					SH_C3[0] * sh[9] * 3.f * (xx - yy) +
+					SH_C3[1] * sh[10] * xz +
+					SH_C3[2] * sh[11] * (-3.f * yy + 4.f * zz - xx) +
+					SH_C3[3] * sh[12] * -3.f * 2.f * yz +
+					SH_C3[4] * sh[13] * -2.f * xy +
+					SH_C3[5] * sh[14] * -2.f * yz +
+					SH_C3[6] * sh[15] * -3.f * 2.f * xy);
+
+				dRGBdz += (
+					SH_C3[1] * sh[10] * xy +
+					SH_C3[2] * sh[11] * 4.f * 2.f * yz +
+					SH_C3[3] * sh[12] * 3.f * (2.f * zz - xx - yy) +
+					SH_C3[4] * sh[13] * 4.f * 2.f * xz +
+					SH_C3[5] * sh[14] * (xx - yy));
+			}
+		}
+	}
+
+	// The view direction is an input to the computation. View direction
+	// is influenced by the Gaussian's mean, so SHs gradients
+	// must propagate back into 3D position.
+	float3 dL_ddir{dot(dRGBdx, dL_dRGB), dot(dRGBdy, dL_dRGB), dot(dRGBdz, dL_dRGB)};
+
+	// Account for normalization of direction
+	float3 dL_dmean = dnormvdv(float3{ dir.x, dir.y, dir.z },
+                               float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
+
+	// Gradients of loss w.r.t. Gaussian means, but only the portion 
+	// that is caused because the mean affects the view-dependent color.
+	grad_xyz = make_float3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
 }
 
 struct Hit{
@@ -101,12 +243,12 @@ struct Hit{
     float resp;
 };
 
-struct HitBwd{
-    int id;
-    float thit;
-    float resp;
-    Matrix3x3 inv_RS;
-};
+//struct HitBwd{
+//    int id;
+//    float thit;
+//    float resp;
+//    Matrix3x3 inv_RS;
+//};
 
 template<typename H>
 __device__ __forceinline__ void hitq_push(H* hitq, unsigned int& hitq_size, const H& hit){
@@ -159,24 +301,6 @@ __device__ void compute_response(
     resp = opacity*exp(-dot(v,v));
 }
 
-__device__ __forceinline__ void compute_grad(
-    const float &prev_acc_trans, const float3 &acc_rad,
-    const float3 &particle_rad, const float3 &full_rad,
-    const float3 &c_samp, const float3 &pos, const float &opacity,
-    const Matrix3x3 &inv_RS,
-    float3 &grad_pos, float &grad_opac){
-
-    const float3 d_rad_resp = prev_acc_trans*(particle_rad-full_rad+acc_rad);
-    const float3 x = c_samp-pos;
-    const float3 v = inv_RS*x;
-    const float g = exp(-dot(v,v));
-    const float3 d_resp_pos = 2*opacity*g*(inv_RS*inv_RS.transpose())*x;
-    const float cs = d_rad_resp.x + d_rad_resp.y + d_rad_resp.z;
-    grad_pos = cs*d_resp_pos;
-    grad_opac = cs*g;
-}
-
-
 struct Acc{
     float3 radiance;
     float transmittance;
@@ -189,21 +313,38 @@ __device__ __forceinline__ void add_samp(Acc& acc, const float3& rad, const Hit&
 }
 
 __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, const Acc& acc_full,
-                                        int chit_id, const float3& c_samp){
+                                        int chit_id, const float3& c_samp,
+                                        const float resp, 
+                                        const float3 ray_origin,
+                                        const bool* clamped
+                                        ){
     const Matrix3x3 inv_RS = construct_inv_RS(params.gs_rotation[chit_id],params.gs_scaling[chit_id]);
-    float3 grad_pos;
-    float grad_opac;
-    compute_grad(acc.transmittance,acc.radiance,rad,acc_full.radiance,
-        c_samp,
-        params.gs_xyz[chit_id],
-        params.gs_opacity[chit_id],
-        inv_RS,
-        grad_pos,grad_opac
-    );
+    
+    const float &prev_acc_trans = acc.transmittance;
+    const float3 &acc_rad = acc.radiance;
+    const float3 &particle_rad = rad;
+    const float3 &full_rad = acc_full.radiance;
+    const float3 &pos = params.gs_xyz[chit_id];
+    const float &opacity = params.gs_opacity[chit_id];
+
+    const float3 d_rad_resp = prev_acc_trans*(particle_rad-full_rad+acc_rad);
+    const float3 x = c_samp-pos;
+    const float3 v = inv_RS*x;
+    const float G = exp(-dot(v,v));
+    const float3 d_resp_pos = 2*opacity*G*(inv_RS*inv_RS.transpose())*x;
+    const float cs = d_rad_resp.x + d_rad_resp.y + d_rad_resp.z;
+
+    const float grad_opac = cs*G;
+    float3 grad_pos = cs*d_resp_pos;
+
     atomicAdd(&params.grad_opacity[chit_id],grad_opac);
-    atomicAdd(&params.grad_xyz[chit_id].x,grad_pos.x);
-    atomicAdd(&params.grad_xyz[chit_id].y,grad_pos.y);
-    atomicAdd(&params.grad_xyz[chit_id].z,grad_pos.z);
+
+    float3 grad_color = make_float3(resp*prev_acc_trans);
+    float3 sh_grad_xyz;
+    compute_radiance_bwd(chit_id,ray_origin,grad_color,sh_grad_xyz,clamped);
+    grad_pos += sh_grad_xyz;
+
+    atomicAdd_float3(params.grad_xyz[chit_id],grad_pos);
 }
 
 
@@ -273,7 +414,8 @@ extern "C" __global__ void __raygen__rg() {
     }
     while(hits_size!=0 && acc.transmittance > Tmin){
         const Hit& chit = hits[0];
-        const float3 rad = compute_radiance(chit.id,ray_origin);
+        float3 rad; bool clamped[3];
+        compute_radiance(chit.id,ray_origin,ray_direction,rad,clamped);
         add_samp(acc,rad,chit);
         hitq_pop(hits,hits_size);
     }
@@ -306,9 +448,12 @@ extern "C" __global__ void __raygen__rg() {
             );
         while(hits_size!=0 && acc_bwd.transmittance > Tmin){
             const Hit& chit = hits[0];
-            const float3 rad = compute_radiance(chit.id,ray_origin);
+            float3 rad; bool clamped[3];
+            compute_radiance(chit.id,ray_origin,ray_direction,rad,clamped);
             acc.radiance += rad*chit.resp*acc.transmittance;
-            add_grad(acc_bwd,rad,acc,chit.id,ray_origin+ray_direction*chit.thit);
+            add_grad(acc_bwd,rad,acc,chit.id,
+                ray_origin+ray_direction*chit.thit,
+                chit.resp, ray_origin, clamped);
             acc.transmittance *= (1.-chit.resp);
             hitq_pop(hits,hits_size);
         }
@@ -338,7 +483,8 @@ extern "C" __global__ void __anyhit__fwd() {
 
     if(hitq_size == hitq_capacity){
         const Hit &chit = hitq[0];
-        const float3 rad = compute_radiance(chit.id,optixGetWorldRayOrigin());
+        float3 rad; bool clamped[3];
+        compute_radiance(chit.id,optixGetWorldRayOrigin(),optixGetWorldRayDirection(),rad,clamped);
         add_samp(acc,rad,chit);
 
         optixSetPayload_0(__float_as_uint(acc.radiance.x));
@@ -429,10 +575,13 @@ extern "C" __global__ void __anyhit__bwd() {
     if(hitq_size == chunk_size){
         const Hit &chit = hitq[0];
 
-        const float3 rad = compute_radiance(chit.id,origin);
+        float3 rad; bool clamped[3];
+        compute_radiance(chit.id,origin,direction,rad,clamped);
 
         acc.radiance += rad*chit.resp*acc.transmittance;
-        add_grad(acc,rad,acc_full,chit.id,origin+direction*chit.thit);
+        add_grad(acc,rad,acc_full,chit.id,
+            origin+direction*chit.thit,
+            chit.resp,origin,clamped);
         acc.transmittance *= (1.-chit.resp);
 
         optixSetPayload_0(__float_as_uint(acc.radiance.x));
