@@ -477,6 +477,8 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.grad_opacity = tracing_params.grad_opacity;
         params.grad_sh = tracing_params.grad_sh;
 
+        params.dL_dC = tracing_params.dL_dC;
+
         auto& sbs = gaussians_structure->device_scene_buffers();
         params.rad_clamped = sbs.rad_clamped;
         params.rad_sh = sbs.rad_sh;

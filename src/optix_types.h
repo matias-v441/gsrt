@@ -36,6 +36,8 @@ struct Params {
     bool* rad_clamped;
     float3* rad_sh;
 
+    float3* dL_dC;
+
     OptixTraversableHandle handle;
 };
 

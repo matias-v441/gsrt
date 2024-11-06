@@ -376,7 +376,11 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
     const float G = exp(-dot(v,v));
     const float3 d_resp_pos = 2*opacity*G*(inv_RS*inv_RS.transpose())*x;
 
-    const float3 dL_dC{1.f,1.f,1.f}; // TODO: use output grad
+    //const float3 dL_dC{1.f,1.f,1.f};
+    const uint3 launch_idxy = optixGetLaunchIndex();
+    const uint3 launch_dim = optixGetLaunchDimensions();
+    const int launch_id = launch_idxy.x + launch_idxy.y*launch_dim.x;
+    const float3 dL_dC = params.dL_dC[launch_id];
 
     const float dL_dresp = dot(dL_dC,dC_dresp);
 

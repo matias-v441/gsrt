@@ -42,7 +42,8 @@ c_rays = torch.stack([x.flatten(),y.flatten(),torch.ones(num_rays)],dim=1)
 ray_directions = c_rays @ c2w.T + C
 ray_directions /= ray_directions.norm(dim=1)[:,None]
 ray_directions = ray_directions.to(device,dtype=torch.float32).contiguous()
-out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,True)
+dL_dC = torch.ones(res_x*res_y,3).float().contiguous().to(device)
+out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,True,dL_dC)
 
 radiance = out["radiance"].cpu().reshape(res_x,res_y,3)
 transmittance = out["transmittance"].cpu().reshape(res_x,res_y)
@@ -71,26 +72,77 @@ print("rotation", grad_rot.shape, part_rot.shape)
 print(grad_rot)
 
 #%%
-class _TracerFunction_Tst(torch.autograd.Function):
+class _TracerFunction_Check(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, part_opac):
         tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,3)
-        out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,False)
+        out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,False,torch.tensor(0))
         return torch.sum(out["radiance"])
 
     @staticmethod
     def backward(ctx, *grad_outputs):
-        tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,True)
+        dL_dC = torch.ones(res_x*res_y,3).float().contiguous().to(device)
+        tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,True,dL_dC)
         grad_xyz = out["grad_xyz"].cpu()
         grad_opacity = out["grad_opacity"].cpu()[:,None]
         return grad_opacity
 
-def trace_function_tst(part_opac):
-    return _TracerFunction_Tst.apply(part_opac)
+def trace_function_check(part_opac):
+    return _TracerFunction_Check.apply(part_opac)
 
 #part_xyz.requires_grad = False
 part_opac.requires_grad = True
-check = torch.autograd.gradcheck(trace_function_tst,(part_opac))
+check = torch.autograd.gradcheck(trace_function_check,(part_opac))
 print(check)
 #%%
+
+part_xyz.requires_grad = True
+part_rot.requires_grad = True
+part_scale.requires_grad = True
+part_opac.requires_grad = True
+part_sh.requires_grad = True
+
+class _TracerFunction_NoLoss(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, part_xyz, part_scale, part_opac, part_sh):
+        tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,3)
+        dL_dC = torch.ones(res_x*res_y,3).float().contiguous().to(device)
+        out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,True,dL_dC)
+        ctx.save_for_backward(out["grad_xyz"],out["grad_rot"],out["grad_scale"],
+                              out["grad_opacity"],out["grad_sh"])
+        return out["radiance"]
+
+    @staticmethod
+    def backward(ctx, *grad_outputs):
+        return ctx.saved_tensors
+
+
+def trace_function(part_opac):
+    return _TracerFunction_NoLoss.apply(part_opac)
+
+#%%
+
+class _TracerFunction(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, *part_data):
+        tracer.load_gaussians(*part_data,3)
+        out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,False,torch.tensor(0))
+        return out["radiance"].cpu()
+
+    @staticmethod
+    def backward(ctx, *grad_outputs):
+        dL_dC = grad_outputs[0].contiguous().to(device)
+        out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,True,dL_dC)
+        return out["grad_xyz"].cpu(),out["grad_rot"].cpu(),out["grad_scale"].cpu(),\
+               out["grad_opacity"][:,None].cpu(),out["grad_sh"].cpu()
+
+def trace_function(*args):
+    return _TracerFunction.apply(*args)
+
+target = torch.ones(res_x*res_y,3)
+rad = trace_function(part_xyz, part_rot, part_scale, part_opac, part_sh)
+loss = torch.mean(torch.sum((target-rad)**2,dim=1))
+loss.backward()

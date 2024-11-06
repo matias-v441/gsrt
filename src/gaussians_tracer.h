@@ -48,6 +48,8 @@ struct TracingParams
     float3 *grad_scale;
     float *grad_opacity;
     float3 *grad_sh;
+
+    float3* dL_dC;
 };
 
 struct SceneBuffers{
