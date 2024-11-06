@@ -55,18 +55,23 @@ plt.figure()
 plt.imshow(radiance)
 
 grad_opacity = out["grad_opacity"].cpu()
-print(part_opac.shape, grad_opacity.shape, grad_opacity)
+print("opacity", part_opac.shape, grad_opacity.shape) 
+print(grad_opacity)
 grad_xyz = out["grad_xyz"].cpu()
-print(grad_xyz.shape,part_xyz.shape,grad_xyz)
+print("xyz", grad_xyz.shape,part_xyz.shape)
+print(grad_xyz)
 grad_sh = out["grad_sh"].cpu()
-print(part_sh.shape,grad_sh.shape,grad_sh)
-# grad_scale = out["grad_scale"].cpu()
-# print(grad_scale)
-# grad_rot = out["grad_rot"].cpu()
-# print(grad_rot)
+print("SH", part_sh.shape,grad_sh.shape)
+print(grad_sh)
+grad_scale = out["grad_scale"].cpu()
+print("scale", grad_scale.shape, part_scale.shape)
+print(grad_scale)
+grad_rot = out["grad_rot"].cpu()
+print("rotation", grad_rot.shape, part_rot.shape)
+print(grad_rot)
 
 #%%
-class _TracerFunction(torch.autograd.Function):
+class _TracerFunction_Tst(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, part_opac):
@@ -81,10 +86,11 @@ class _TracerFunction(torch.autograd.Function):
         grad_opacity = out["grad_opacity"].cpu()[:,None]
         return grad_opacity
 
-def trace_function(part_opac):
-    return _TracerFunction.apply(part_opac)
+def trace_function_tst(part_opac):
+    return _TracerFunction_Tst.apply(part_opac)
 
 #part_xyz.requires_grad = False
 part_opac.requires_grad = True
-check = torch.autograd.gradcheck(trace_function,(part_opac))
+check = torch.autograd.gradcheck(trace_function_tst,(part_opac))
 print(check)
+#%%

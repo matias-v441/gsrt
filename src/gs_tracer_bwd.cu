@@ -93,7 +93,7 @@ __device__ __forceinline__ void atomicAdd_float3(float3 &acc, const float3 &val)
 //                      const bool* clamped, const glm::vec3* dL_dcolor,
 //                      glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
 __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin, 
-    const float3& grad_color, float3& grad_xyz, const bool* clamped)
+    const float3& dL_dcolor, float3& grad_xyz, const bool* clamped)
 {
 
 	// same as forward -----
@@ -108,7 +108,7 @@ __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin,
 
 	// Use PyTorch rule for clamping: if clamping was applied,
 	// gradient becomes 0.
-	float3 dL_dRGB = grad_color;
+	float3 dL_dRGB = dL_dcolor;
 	dL_dRGB.x *= clamped[3 * gs_id + 0] ? 0.f : 1.f;
 	dL_dRGB.y *= clamped[3 * gs_id + 1] ? 0.f : 1.f;
 	dL_dRGB.z *= clamped[3 * gs_id + 2] ? 0.f : 1.f;
@@ -312,13 +312,56 @@ __device__ __forceinline__ void add_samp(Acc& acc, const float3& rad, const Hit&
     acc.transmittance *= (1.-chit.resp);
 }
 
+__device__ __forceinline__ Matrix3x3 outer(const float3& a, const float3& b){
+    Matrix3x3 M({
+        a.x*b.x, a.x*b.y, a.x*b.z,
+        a.y*b.x, a.y*b.y, a.y*b.z,
+        a.z*b.x, a.z*b.y, a.z*b.z
+    });
+    return M;
+}
+
+__device__ __forceinline__ Matrix4x4 outer(const float4& a, const float4& b){
+    Matrix4x4 M({
+        a.x*b.x, a.x*b.y, a.x*b.z, a.x*b.w,
+        a.y*b.x, a.y*b.y, a.y*b.z, a.y*b.w,
+        a.z*b.x, a.z*b.y, a.z*b.z, a.z*b.w,
+        a.w*b.x, a.w*b.y, a.w*b.z, a.w*b.w,
+    });
+    return M;
+}
+
+__device__ __forceinline__ float dot(const Matrix3x3& a, const Matrix3x3& b){
+    float res = 0;
+    const float* pa = a.getData();
+    const float* pb = b.getData();
+    for(int i = 0; i < 9; ++i)
+        res += pa[i]*pb[i];
+    return res;
+}
+
+__device__ __forceinline__ Matrix3x3 TxM(const Matrix3x3& M, 
+    const Matrix3x3& T11, const Matrix3x3& T12,const Matrix3x3& T13,
+    const Matrix3x3& T21, const Matrix3x3& T22,const Matrix3x3& T23,
+    const Matrix3x3& T31, const Matrix3x3& T32,const Matrix3x3& T33
+){
+    const float3 m1 = M.getCol(0);
+    const float3 m2 = M.getCol(1);
+    const float3 m3 = M.getCol(2);
+    return m1.x*T11+m2.x*T12+m3.x*T13
+          +m1.y*T21+m2.y*T22+m3.y*T23
+          +m1.z*T31+m2.z*T32+m3.z*T33; 
+}
+
 __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, const Acc& acc_full,
                                         int chit_id, const float3& c_samp,
                                         const float resp, 
                                         const float3 ray_origin,
                                         const bool* clamped
                                         ){
-    const Matrix3x3 inv_RS = construct_inv_RS(params.gs_rotation[chit_id],params.gs_scaling[chit_id]);
+    const float4& quat = params.gs_rotation[chit_id];
+    const float3& scale = params.gs_scaling[chit_id];
+    const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
     
     const float &prev_acc_trans = acc.transmittance;
     const float3 &acc_rad = acc.radiance;
@@ -327,24 +370,178 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
     const float3 &pos = params.gs_xyz[chit_id];
     const float &opacity = params.gs_opacity[chit_id];
 
-    const float3 d_rad_resp = prev_acc_trans*(particle_rad-full_rad+acc_rad);
+    const float3 dC_dresp = prev_acc_trans*(particle_rad-full_rad+acc_rad);
     const float3 x = c_samp-pos;
     const float3 v = inv_RS*x;
     const float G = exp(-dot(v,v));
     const float3 d_resp_pos = 2*opacity*G*(inv_RS*inv_RS.transpose())*x;
-    const float cs = d_rad_resp.x + d_rad_resp.y + d_rad_resp.z;
 
-    const float grad_opac = cs*G;
-    float3 grad_pos = cs*d_resp_pos;
+    const float3 dL_dC{1.f,1.f,1.f}; // TODO: use output grad
+
+    const float dL_dresp = dot(dL_dC,dC_dresp);
+
+    const float grad_opac = dL_dresp*G;
+    float3 grad_pos = dL_dresp*d_resp_pos;
 
     atomicAdd(&params.grad_opacity[chit_id],grad_opac);
 
-    float3 grad_color = make_float3(resp*prev_acc_trans);
+    const float3 dC_dcolor_diag = make_float3(resp*prev_acc_trans);
+
+    const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
+
+    // SH
     float3 sh_grad_xyz;
-    compute_radiance_bwd(chit_id,ray_origin,grad_color,sh_grad_xyz,clamped);
+    compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
     grad_pos += sh_grad_xyz;
 
     atomicAdd_float3(params.grad_xyz[chit_id],grad_pos);
+
+    const Matrix3x3 dresp_dinvSigma = - opacity*G*outer(x,x);
+
+    // Scale
+    const Matrix3x3 R = construct_rotation(quat);
+    const float3 r1 = R.getCol(0);
+    const float3 r2 = R.getCol(1);
+    const float3 r3 = R.getCol(2);
+    const Matrix3x3 dinvSigma_ds1 = -2.f/scale.x*outer(r1,r1);
+    const Matrix3x3 dinvSigma_ds2 = -2.f/scale.y*outer(r2,r2);
+    const Matrix3x3 dinvSigma_ds3 = -2.f/scale.z*outer(r3,r3);
+    const float3 dL_ds{
+        dL_dresp*dot(dresp_dinvSigma,dinvSigma_ds1),
+        dL_dresp*dot(dresp_dinvSigma,dinvSigma_ds2),
+        dL_dresp*dot(dresp_dinvSigma,dinvSigma_ds3)
+    }; 
+    atomicAdd_float3(params.grad_scale[chit_id],dL_ds);
+
+    // Rotation
+    const float r11=r1.x, r12=r1.y, r13=r1.z;
+    const float r21=r2.x, r22=r2.y, r23=r2.z;
+    const float r31=r3.x, r32=r3.y, r33=r3.z;
+    Matrix3x3 dinvSigma_dr11({
+        2.f*r11, r12, r13,
+        r12, 0.f, 0.f,
+        r13, 0.f, 0.f 
+        }
+    );
+    Matrix3x3 dinvSigma_dr21({
+        0.f, r11, 0.f,
+        r12, 2.f*r12, r13,
+        0.f, r13, 0.f 
+        }
+    );
+    Matrix3x3 dinvSigma_dr31({
+        0.f, 0.f, r11,
+        0.f, 0.f, r12,
+        r11, r12, 2.f*r13 
+        }
+    );
+    const float isx_2 = 1.f/(scale.x*scale.x);
+    dinvSigma_dr11 *= isx_2;
+    dinvSigma_dr21 *= isx_2;
+    dinvSigma_dr31 *= isx_2;
+
+    Matrix3x3 dinvSigma_dr12({
+        2.f*r21, r22, r23,
+        r22, 0.f, 0.f,
+        r23, 0.f, 0.f 
+        }
+    );
+    Matrix3x3 dinvSigma_dr22({
+        0.f, r21, 0.f,
+        r22, 2.f*r22, r23,
+        0.f, r23, 0.f 
+        }
+    );
+    Matrix3x3 dinvSigma_dr32({
+        0.f, 0.f, r21,
+        0.f, 0.f, r22,
+        r21, r22, 2.f*r23 
+        }
+    );
+    const float isy_2 = 1.f/(scale.y*scale.y);
+    dinvSigma_dr12 *= isy_2;
+    dinvSigma_dr22 *= isy_2;
+    dinvSigma_dr32 *= isy_2;
+
+    Matrix3x3 dinvSigma_dr13({
+        2.f*r31, r32, r33,
+        r32, 0.f, 0.f,
+        r33, 0.f, 0.f 
+        }
+    );
+    Matrix3x3 dinvSigma_dr23({
+        0.f, r31, 0.f,
+        r32, 2.f*r32, r33,
+        0.f, r33, 0.f 
+        }
+    );
+    Matrix3x3 dinvSigma_dr33({
+        0.f, 0.f, r31,
+        0.f, 0.f, r32,
+        r31, r32, 2.f*r33 
+        }
+    );
+    const float isz_2 = 1.f/(scale.z*scale.z);
+    dinvSigma_dr13 *= isz_2;
+    dinvSigma_dr23 *= isz_2;
+    dinvSigma_dr33 *= isz_2;
+
+    const float4 nquat = normalize(quat);
+    const float qr=nquat.x, qi=nquat.y, qj=nquat.z, qk=nquat.w;
+    Matrix3x3 dR_dnqr({
+        0.f, -qk, qj,
+        qk, 0.f, -qi,
+        -qi, qi, 0.f
+    });
+    dR_dnqr *= 2.f;
+    Matrix3x3 dR_dnqi({
+        0.f, qj, qk,
+        qj, -2.f*qi, -qr,
+        qk, qr, -2.f*qi
+    });
+    dR_dnqi *= 2.f;
+    Matrix3x3 dR_dnqj({
+        -2.f*qj, qi, qr,
+        qi, 0.f, qk,
+        -qr, qk, -2.f*qj
+    });
+    dR_dnqj *= 2.f;
+    Matrix3x3 dR_dnqk({
+        -2.f*qk, -qr, qi,
+        qr, -2.f*qk, qj,
+        qi, qj, 0.f
+    });
+    dR_dnqk *= 2.f;
+
+    Matrix4x4 dnq_dq = outer(quat,quat*(-1.f));
+    float* p_dnq_dq = dnq_dq.getData();
+    float qdq = dot(quat,quat);
+    // main diag
+    p_dnq_dq[0] = qdq-quat.x*quat.x;
+    p_dnq_dq[5] = qdq-quat.y*quat.y;
+    p_dnq_dq[10] = qdq-quat.z*quat.z;
+    p_dnq_dq[15] = qdq-quat.w*quat.w;
+    //---
+    dnq_dq *= powf(qdq,-1.5f);
+
+    float dL_dq[4];
+    for(int i = 0; i < 4; ++i){
+        const float4 dnq_dqi = dnq_dq.getCol(i);    
+        const Matrix3x3 dR_dqi = dR_dnqr*dnq_dqi.x
+                                +dR_dnqi*dnq_dqi.y
+                                +dR_dnqj*dnq_dqi.z
+                                +dR_dnqk*dnq_dqi.w;
+        const Matrix3x3 dinvSigma_dqi = TxM(dR_dqi, 
+            dinvSigma_dr11, dinvSigma_dr12, dinvSigma_dr13,
+            dinvSigma_dr21, dinvSigma_dr22, dinvSigma_dr23,
+            dinvSigma_dr31, dinvSigma_dr32, dinvSigma_dr33
+        );
+        dL_dq[i] = dL_dresp*dot(dresp_dinvSigma,dinvSigma_dqi);
+    }
+    atomicAdd(&params.grad_rotation[chit_id].x,dL_dq[0]);
+    atomicAdd(&params.grad_rotation[chit_id].y,dL_dq[1]);
+    atomicAdd(&params.grad_rotation[chit_id].z,dL_dq[2]);
+    atomicAdd(&params.grad_rotation[chit_id].w,dL_dq[3]);
 }
 
 
