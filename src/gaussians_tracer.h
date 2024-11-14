@@ -47,6 +47,7 @@ struct TracingParams
     float4 *grad_rotation;
     float3 *grad_scale;
     float *grad_opacity;
+    float *grad_resp;
     float3 *grad_sh;
 
     float3* dL_dC;
