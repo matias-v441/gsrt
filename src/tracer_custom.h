@@ -29,6 +29,12 @@ private:
 
     struct AABB { float3 min, max; };
     std::vector<AABB> aabbs;
+    struct Node{
+        int axis; // leaf: -1
+        int right; // leaf: data id
+    };
+    std::vector<Node> nodes;
+    std::vector<std::vector<int>> leaf_data_ids;
 };
 
 class TracerCustom{
