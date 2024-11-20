@@ -462,6 +462,7 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.gs_sh = gs.sh;
         params.sh_deg = gs.sh_deg;
         params.gs_normals = gs.normals;
+        params.gs_color = gs.color;
 
         params.radiance = tracing_params.radiance;
         params.transmittance = tracing_params.transmittance;
@@ -477,6 +478,7 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.grad_opacity = tracing_params.grad_opacity;
         params.grad_sh = tracing_params.grad_sh;
         params.grad_resp = tracing_params.grad_resp;
+        params.grad_color = tracing_params.grad_color;
 
         params.dL_dC = tracing_params.dL_dC;
 
@@ -536,6 +538,7 @@ void GaussiansAS::release() {
     device_free(d_gaussians.opacity);
     device_free(d_gaussians.sh);
     device_free(d_gaussians.normals);
+    device_free(d_gaussians.color);
     device_free(d_scene_buffers.rad_clamped);
     device_free(d_scene_buffers.rad_sh);
 }
@@ -667,6 +670,7 @@ void GaussiansAS::build(const GaussiansData& data) {
     toDevice(d_gaussians.opacity, data.opacity, data.numgs*sizeof(float));
     toDevice(d_gaussians.sh, data.sh, data.numgs*sizeof(float3)*16);
     toDevice(d_gaussians.normals, normals.data(), normals.size()*sizeof(float3));
+    toDevice(d_gaussians.color, data.color, data.numgs*sizeof(float3));
 
     // Allocate buffers of scene size 
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_scene_buffers.rad_clamped), data.numgs*3*sizeof(bool)));

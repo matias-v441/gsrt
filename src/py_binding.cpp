@@ -79,6 +79,7 @@ struct PyGaussiansTracer {
 
         torch::Tensor grad_xyz,grad_opacity,grad_sh,grad_scale,grad_rot;
         torch::Tensor grad_resp;
+        torch::Tensor grad_color;
         if(compute_grad){
             grad_xyz = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
             grad_opacity = torch::zeros({(long)particles.numgs}, torch::device(device).dtype(torch::kFloat32));
@@ -86,12 +87,14 @@ struct PyGaussiansTracer {
             grad_sh = torch::zeros({(long)particles.numgs,16,3}, torch::device(device).dtype(torch::kFloat32));
             grad_scale = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
             grad_rot = torch::zeros({(long)particles.numgs,4}, torch::device(device).dtype(torch::kFloat32));
+            grad_color = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
             tracing_params.grad_xyz = reinterpret_cast<float3 *>(grad_xyz.data_ptr());
             tracing_params.grad_opacity = reinterpret_cast<float*>(grad_opacity.data_ptr());
             tracing_params.grad_resp = reinterpret_cast<float*>(grad_resp.data_ptr());
             tracing_params.grad_sh = reinterpret_cast<float3*>(grad_sh.data_ptr());
             tracing_params.grad_scale = reinterpret_cast<float3*>(grad_scale.data_ptr());
             tracing_params.grad_rotation = reinterpret_cast<float4*>(grad_rot.data_ptr());
+            tracing_params.grad_color = reinterpret_cast<float3*>(grad_color.data_ptr());
         }
         tracer->trace_rays(tracing_params);
 
@@ -108,7 +111,8 @@ struct PyGaussiansTracer {
                         "grad_sh"_a = grad_sh,
                         "grad_scale"_a = grad_scale,
                         "grad_rot"_a = grad_rot,
-                        "grad_resp"_a = grad_resp
+                        "grad_resp"_a = grad_resp,
+                        "grad_color"_a = grad_color
                         );
     }
 
@@ -118,13 +122,16 @@ struct PyGaussiansTracer {
         const torch::Tensor &scaling,
         const torch::Tensor &opacity,
         const torch::Tensor &sh,
-        const int sh_deg) {
+        const int sh_deg,
+        const torch::Tensor &color
+        ) {
 
         CHECK_HOST_FLOAT_DIM(xyz,3);
         CHECK_HOST_FLOAT_DIM(rotation,4);
         CHECK_HOST_FLOAT_DIM(scaling,3);
         CHECK_HOST_FLOAT_DIM(opacity,1);
         CHECK_HOST_FLOAT_DIM(sh,3);
+        CHECK_HOST_FLOAT_DIM(color,3);
         
         particles.numgs = xyz.numel() / 3;
         particles.xyz = reinterpret_cast<float3 *>(xyz.data_ptr());
@@ -133,6 +140,7 @@ struct PyGaussiansTracer {
         particles.opacity = reinterpret_cast<float *>(opacity.data_ptr());
         particles.sh = reinterpret_cast<float3 *>(sh.data_ptr());
         particles.sh_deg = sh_deg;
+        particles.color = reinterpret_cast<float3*>(color.data_ptr());
         tracer->load_gaussians(particles);
     }
 

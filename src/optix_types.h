@@ -8,6 +8,7 @@ struct Params {
     const float3* gs_scaling;
     const float* gs_opacity;
     const float3* gs_sh;
+    const float3* gs_color;
 
     const float3* gs_normals;
     
@@ -32,6 +33,7 @@ struct Params {
     float3* grad_scale;
     float* grad_opacity;
     float3* grad_sh;
+    float3* grad_color;
 
     float* grad_resp;
 

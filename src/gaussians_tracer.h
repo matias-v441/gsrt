@@ -21,6 +21,7 @@ struct GaussiansData
     float3 *scaling;
     float *opacity;
     float3 *sh;
+    float3 *color;
 
     float3 *normals;
 
@@ -49,6 +50,7 @@ struct TracingParams
     float *grad_opacity;
     float *grad_resp;
     float3 *grad_sh;
+    float3 *grad_color;
 
     float3* dL_dC;
 };

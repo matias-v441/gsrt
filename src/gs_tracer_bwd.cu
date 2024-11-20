@@ -30,6 +30,9 @@ __device__ Matrix3x3 construct_rotation(float4 vec){
 __device__ void compute_radiance(unsigned int gs_id, const float3 &ray_origin,
      const float3& ray_direction, float3& rad, bool *clamped){
 
+    rad = params.gs_color[gs_id];
+    return;
+
     //const float3 dir = -ray_direction;
     const float3 mu = params.gs_xyz[gs_id];
     const float3 dir = normalize(mu-ray_origin);
@@ -97,6 +100,8 @@ __device__ __forceinline__ void atomicAdd_float3(float3 &acc, const float3 &val)
 __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin, 
     const float3& dL_dcolor, float3& grad_xyz, const bool* clamped)
 {
+    atomicAdd_float3(params.grad_color[gs_id], dL_dcolor);
+    return;
 
 	// same as forward -----
 
