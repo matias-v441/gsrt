@@ -160,20 +160,22 @@ struct PyTracerCustom {
 
     py::dict trace_rays(const torch::Tensor &ray_origins,
                         const torch::Tensor &ray_directions,
-                        int width, int height) {
+                        int width, int height,
+                        bool compute_grad,
+                        const torch::Tensor &dL_dC) {
 
         torch::AutoGradMode enable_grad(false);
-        CHECK_FLOAT_DIM(ray_origins,3);
-        CHECK_FLOAT_DIM(ray_directions,3);
+        //CHECK_FLOAT_DIM(ray_origins,3);
+        //CHECK_FLOAT_DIM(ray_directions,3);
         const size_t num_rays = ray_origins.numel() / 3;
-        const auto radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
-        const auto transmittance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
+        const auto radiance = torch::zeros({(long)num_rays, 3}, torch::dtype(torch::kFloat32));
+        const auto transmittance = torch::zeros({(long)num_rays}, torch::dtype(torch::kFloat32));
 
-        const auto debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
-        const auto debug_map_1 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
+        const auto debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::dtype(torch::kFloat32));
+        const auto debug_map_1 = torch::zeros({(long)num_rays, 3}, torch::dtype(torch::kFloat32));
 
-        const auto num_its = torch::zeros({1,1}, torch::device(device).dtype(torch::kInt64));
-        const auto num_its_bwd = torch::zeros({1,1}, torch::device(device).dtype(torch::kInt64));
+        const auto num_its = torch::zeros({1,1}, torch::dtype(torch::kInt64));
+        const auto num_its_bwd = torch::zeros({1,1}, torch::dtype(torch::kInt64));
         using namespace std::chrono;
         const auto frame_start = high_resolution_clock::now();
         TracingParams tracing_params{};
