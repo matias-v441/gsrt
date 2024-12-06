@@ -32,9 +32,11 @@ part_sh = torch.cat((part_features_dc,part_features_rest),dim=1).contiguous()
 
 tracer = GaussiansTracer(device)
 
+part_color = torch.ones(part_opac.shape[0],3).contiguous()*torch.tensor([0.,1.,0.])
 tracer.load_gaussians(part_xyz,part_rot,part_scale,
                       part_opac,part_sh,
-                      active_sh_deg
+                      active_sh_deg,
+                      part_color
                       )
 
 

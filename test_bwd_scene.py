@@ -21,7 +21,8 @@ gs_features_rest = gaussians[3].detach().cpu()
 gs_active_sh_degree = gaussians[0]
 gs_sh = torch.cat((gs_features_dc,gs_features_rest),dim=1).contiguous()
 
-tracer.load_gaussians(gs_xyz,gs_rotation,gs_scaling,gs_opacity,gs_sh,gs_active_sh_degree)
+part_color = torch.ones(gs_opacity.shape[0],3).contiguous()*torch.tensor([0.,1.,0.])
+tracer.load_gaussians(gs_xyz,gs_rotation,gs_scaling,gs_opacity,gs_sh,gs_active_sh_degree,part_color)
 
 cam_data = {"width": 800, "height": 800,
               "position": [-0.0, 2.7372601032257085, 2.959291696548462], 

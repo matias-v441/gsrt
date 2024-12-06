@@ -664,6 +664,7 @@ void GaussiansAS::build(const GaussiansData& data) {
     toDevice(d_triangles, triangles.data(), triangles.size() * sizeof(uint3));
 
     d_gaussians.numgs = data.numgs;
+    d_gaussians.sh_deg = data.sh_deg;
     toDevice(d_gaussians.xyz, data.xyz, data.numgs*sizeof(float3));
     toDevice(d_gaussians.rotation, data.rotation, data.numgs*sizeof(float4));
     toDevice(d_gaussians.scaling, data.scaling, data.numgs*sizeof(float3));

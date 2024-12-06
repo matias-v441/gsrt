@@ -30,15 +30,17 @@ __device__ Matrix3x3 construct_rotation(float4 vec){
 __device__ void compute_radiance(unsigned int gs_id, const float3 &ray_origin,
      const float3& ray_direction, float3& rad, bool *clamped){
 
-    rad = params.gs_color[gs_id];
-    return;
-
+    const int deg = params.sh_deg;
+    if(deg == -1){
+        rad = params.gs_color[gs_id];
+        return;
+        //printf("%d\n",deg);
+    }
     //const float3 dir = -ray_direction;
     const float3 mu = params.gs_xyz[gs_id];
     const float3 dir = normalize(mu-ray_origin);
 
     const float3* sh = params.gs_sh + gs_id*16;
-    const int deg = params.sh_deg;
 
 	float3 result = SH_C0 * sh[0];
 
@@ -564,9 +566,9 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
 }
 
 
-constexpr int chunk_size = 512;
+constexpr int chunk_size = 1024;
 
-constexpr int num_recasts = 2;
+constexpr int num_recasts = 1;
 constexpr int hits_max_capacity = chunk_size*num_recasts;
 
 constexpr int triagPerParticle = 20;
@@ -599,7 +601,7 @@ extern "C" __global__ void __raygen__rg() {
     acc.transmittance = 1.f;
     unsigned int* uip_acc = reinterpret_cast<unsigned int *>(&acc);
 
-    constexpr float max_dist = 1e16f; 
+    constexpr float max_dist = 100.f; 
     float min_dist = 0.f;
     unsigned int hits_capacity = chunk_size;
     while(hits_capacity <= hits_max_capacity){
@@ -716,11 +718,11 @@ extern "C" __global__ void __anyhit__fwd() {
         if(acc.transmittance < Tmin){
             return;
         }
-        if(hitq_capacity != hits_max_capacity && optixGetRayTmax() < chit.thit){
-            printf("recast %d\n",hitq_capacity+chunk_size);
-            optixSetPayload_7(hitq_capacity+chunk_size);
-            return;
-        }
+        //if(hitq_capacity != hits_max_capacity && optixGetRayTmax() < chit.thit){
+        //    printf("recast %d\n",hitq_capacity+chunk_size);
+        //    optixSetPayload_7(hitq_capacity+chunk_size);
+        //    return;
+        //}
         hitq_pop(hitq,hitq_size);
         optixSetPayload_6(hitq_size);
     }
