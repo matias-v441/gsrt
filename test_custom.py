@@ -49,8 +49,12 @@ active_sh_deg = 3
 # active_sh_deg = gaussians[0]
 # part_sh = torch.cat((part_features_dc,part_features_rest),dim=1).contiguous()
 
-tracer = TracerCustom(device)
-#tracer = GaussiansTracer(device)
+use_custom = True
+
+if use_custom:
+    tracer = TracerCustom(device)
+else:
+    tracer = GaussiansTracer(device)
 
 tracer.load_gaussians(part_xyz,part_rot,part_scale,
                       part_opac,part_sh,
@@ -91,6 +95,9 @@ ray_directions = c_rays @ c2w.T + C
 ray_directions /= ray_directions.norm(dim=1)[:,None]
 ray_directions = ray_directions.float().contiguous()
 #print(ray_origins,ray_directions)
+if not use_custom:
+    ray_origins = ray_origins.to(device=device)
+    ray_directions = ray_directions.to(device=device)
 
 out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,False,torch.tensor(0.))
 
