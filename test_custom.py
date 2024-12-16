@@ -11,9 +11,9 @@ device = torch.device("cuda:0")
 part_num = 30
 torch.manual_seed(0)
 scene_min = torch.tensor([-100.,-100.,300.])
-scene_max =  torch.tensor([100.,100.,300.])
+scene_max =  torch.tensor([100.,100.,200.])
 part_xyz = (torch.rand(part_num,3)-.5)*(scene_max-scene_min)*.5+(scene_max+scene_min)*.5
-part_scale = torch.ones(part_num,3)*2
+part_scale = torch.ones(part_num,3)
 part_rot = torch.hstack([torch.ones(part_num,1),torch.zeros(part_num,3)])
 part_opac = torch.ones(part_num,1)
 part_sh = torch.zeros(part_num,16,3).contiguous()
@@ -61,6 +61,8 @@ tracer.load_gaussians(part_xyz,part_rot,part_scale,
                       active_sh_deg
                       )
 
+quit()
+#%%
 
 # fx,fy,cx,cy = (1000.,1000.,-500.,-500.)
 # K = torch.tensor([[fx,0.,cx],[0.,fy,cy],[0.,0.,1.]])

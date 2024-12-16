@@ -11,12 +11,11 @@ using namespace util;
 
 
 void GaussiansKDTree::build(){
-
     std::cout << "building..." << std::endl;
 
     using gsrt_util::icosahedron::n_verts;
     const float alpha_min = .01;
-    AABB scene_vol{make_float3(__FLT_MAX__),make_float3(__FLT_MIN__)};
+    AABB scene_vol{make_float3(__FLT_MAX__),make_float3(-__FLT_MAX__)};
     aabbs.resize(data.numgs,scene_vol);
     for(int i = 0; i < data.numgs; ++i){
         const Matrix3x3 R = gsrt_util::construct_rotation(data.rotation[i]);
@@ -31,33 +30,32 @@ void GaussiansKDTree::build(){
         scene_vol.min = fminf(aabbs[i].min,scene_vol.min);
         scene_vol.max = fmaxf(aabbs[i].max,scene_vol.max);
     }
+    std::array<std::vector<int>,3> axis_events_asort;
     for(int axis = 0; axis < 3; ++axis){
         std::vector<float> events(data.numgs*2);
         std::vector<int> event_ids(data.numgs*2);
         for(int i = 0; i < data.numgs; ++i){
             int si = i;
             int ei = i+data.numgs;
-            events[si] = vec_c(aabbs[i].min,i);
-            events[ei] = vec_c(aabbs[i].max,i);
+            events[si] = vec_c(aabbs[i].min,axis);
+            events[ei] = vec_c(aabbs[i].max,axis);
             event_ids[si] = si;
             event_ids[ei] = ei;
         }
         std::sort(event_ids.begin(),event_ids.end(),
             [&](int i, int j){return events[i]<events[j];});
-
-        // add links to start event for each particle
-        aabb_start_asort_ids[axis].resize(data.numgs);
-        for(int i = 0; i < event_ids.size(); ++i){
-            if(event_ids[i] < data.numgs) // start event
-                aabb_start_asort_ids[axis][event_ids[i]] = i;
-        }
-
         axis_events_asort[axis] = std::move(event_ids);
         axis_events[axis] = std::move(events);
     }
-    const int n = data.numgs*2;
-    std::array<int2,3> event_ranges{make_int2(0,n),make_int2(0,n),make_int2(0,n)};
-    build_rec(scene_vol,event_ranges,data.numgs,0);
+    std::cout << "axis events" << std::endl;
+    for(int a=0; a<3; ++a){
+        std::cout << "axis " << a << std::endl;
+        for(int ev : axis_events_asort[a]){
+            std::cout << axis_events[a][ev] << " ";
+        }
+        std::cout << std::endl;
+    }
+    build_rec(scene_vol,axis_events_asort,data.numgs,0);
 
     std::cout << "num. leaves: " << leaves_data.size() << std::endl;
     int max_leaf_size = 0;
@@ -68,78 +66,135 @@ void GaussiansKDTree::build(){
 }
 
 void GaussiansKDTree::build_rec(AABB V,
-                                std::array<std::vector<int>,3> event_ids,
+                                axis_ev_ids evs,
                                 int num_part,
                                 int depth){
+    printf("----------- depth %d\n",depth);
+    printf("num_part %d\n",num_part);
+    //if(evs[0].size()<=2) return;
     int axis = depth%3; // round-robin
-    SplitPlane best_plane = find_best_plane(axis, V, events_ranges[axis], num_part);
-    Node& node = nodes.emplace_back();
-    if(best_plane.cost < cost(0.f,1.f,0,num_part) // split is better than no split
-        && num_part < MAX_LEAF_SIZE // if the leaf is too big we split anyway
+    SplitPlane best_plane = find_best_plane(axis, V, evs, num_part);
+    std::cout << "cost nosplit " << cost(0.f,1.f,0,num_part) << std::endl;
+    int node_id = nodes.size();
+    nodes.emplace_back();
+    if(best_plane.num_left==0 || best_plane.num_right==0 // no reason to split
+        || best_plane.cost > cost(0.f,1.f,0,num_part) // split is worse than no split
+        || num_part > MAX_LEAF_SIZE // if the leaf is too big we split anyway
         ){
-        node.set_data_id(leaves_data.size());
-        fill_leaf_particles(leaves_data.emplace_back(), events_ranges);
+        std::cout << "leaf" << std::endl;
+        nodes[node_id].set_data_id(leaves_data.size());
+        fill_leaf_particles(leaves_data.emplace_back(),V,evs);
         return;
     }
-    node.set_axis(axis);
-    node.set_cplane(best_plane.coord);
-    auto [Vleft,Vright] = split(axis,best_plane.coord,V);
-
-    events_ranges[axis] = make_int2(events_ranges[axis].x,best_plane.event_id);
-    build_rec(Vleft,events_ranges,best_plane.num_left,depth+1);
-
-    node.set_right_id(nodes.size());
-
-    events_ranges[axis] = make_int2(best_plane.event_id,events_ranges[axis].y);
-    build_rec(Vright,events_ranges,best_plane.num_right,depth+1);
+    std::cout << "split" << std::endl;
+    nodes[node_id].set_axis(axis);
+    nodes[node_id].set_cplane(best_plane.coord);
+    
+    auto [Vleft,Vright] = split_volume(axis,best_plane.coord,V);
+    auto [evs_left,evs_right] = split_events(evs,axis,best_plane.coord);
+    int num_left = best_plane.num_left;
+    int num_right = best_plane.num_right;
+    if(num_left==0){
+        std::swap(num_left,num_right);
+        std::swap(evs_left,evs_right);
+    }
+    build_rec(Vleft,evs_left,num_left,depth+1);
+    if(num_right!=0){
+        nodes[node_id].set_right_id(nodes.size());
+        build_rec(Vright,evs_right,num_right,depth+1);
+    }
 }
 
-void GaussiansKDTree::fill_leaf_particles(LeafData &leaf, const std::vector<int>& axis_event_ids) const{
-    // add all particles corresponding to start events and all that 
-    // correspond to end events with the start event not lying in leaf range
-    // particles on the splitting plane get added to both adjacent volumes
-    for(int i = event_ids.x; i < event_ids.y; ++i){
-        int ev_id = axis_events_asort[0][i];
+std::pair<axis_ev_ids,axis_ev_ids> GaussiansKDTree::split_events(
+    axis_ev_ids& evs,int split_ax,float csplit) const{
+
+    printf("SEV_in %d split=%f\n",evs[split_ax].size(),csplit);
+    for(int ev : evs[split_ax]){
+        printf("%f ",axis_events[split_ax][ev]);
+    }
+    std::cout << std::endl;
+
+    axis_ev_ids left;
+    axis_ev_ids right;
+    for(int ax = 0; ax < 3; ++ax){
+        for(int ev_id : evs[ax]){
+            auto aabb = aabbs[ev2part_id(ev_id)];
+            float start_ev = vec_c(aabb.min,split_ax);
+            float end_ev = vec_c(aabb.max,split_ax);
+            if(start_ev<csplit){
+                left[ax].push_back(ev_id);
+            }
+            if(end_ev>csplit){
+                right[ax].push_back(ev_id);
+            }
+        }
+    }
+    printf("SEV %d %d\n",left[0].size(),right[0].size());
+    printf("SEV %d %d\n",left[1].size(),right[1].size());
+    printf("SEV %d %d\n",left[2].size(),right[2].size());
+    return {left,right};
+}
+
+void GaussiansKDTree::fill_leaf_particles(LeafData &leaf, AABB V,
+             const axis_ev_ids& evs) const{
+
+    for(int ev_id : evs[0]){
         int part_id = ev2part_id(ev_id);
-        if(is_start_ev(ev_id)
-            || (aabb_start_asort_ids[0][part_id]<event_ranges[0].x)){
+        if(is_start_ev(ev_id) || aabbs[part_id].min.x < V.min.x){
             leaf.part_ids.push_back(part_id);
         }
     }
 }
 
-GaussiansKDTree::SplitPlane GaussiansKDTree::find_best_plane(int axis, AABB V, int2 events_range, int num_part) const{
-    
+GaussiansKDTree::SplitPlane GaussiansKDTree::find_best_plane(int axis, AABB V, axis_ev_ids evs, int num_part) const{
+    printf("FBP vol_min=%f vol_max=%f\n",evs[0].size(),evs[1].size(),evs[2].size(),
+        vec_c(V.min,axis),vec_c(V.max,axis));
+    for(int ev : evs[axis]){
+        printf("%f ",axis_events[axis][ev]);
+    }
+    std::cout << std::endl;
+    for(int ev : evs[axis]){
+        if(ev < data.numgs)
+            printf("%ds ",ev2part_id(ev));
+        else
+            printf("%de ",ev2part_id(ev));
+    }
+    std::cout << std::endl;
+    for(int ev_id : evs[axis]){ 
+        auto aabb = aabbs[ev2part_id(ev_id)];
+        printf("%f ", vec_c(aabb.min,axis));
+    }
+    std::cout << std::endl;
     int num_left=0,num_right=num_part;
     // add all nodes started outside the volume to the left side
-    for(int i = events_range.x+1; i < events_range.y;++i){
-        int id = axis_events_asort[axis][i];
-        float ev = axis_events[axis][id];
-        if(is_end_ev(id) && aabb_start_asort_ids[axis][ev2part_id(id)] < events_range.x){
+    for(int ev_id : evs[axis]){ 
+        auto aabb = aabbs[ev2part_id(ev_id)];
+        if(vec_c(aabb.min,axis)<vec_c(V.min,axis)){
             ++num_left;
         }
     }
     SplitPlane best_plane;
     best_plane.cost = __FLT_MAX__;
     // find split with minimum SAH
-    for(int i = events_range.x+1; i < events_range.y;++i){
-        int id = axis_events_asort[axis][i];
-        float ev = axis_events[axis][id];
-        if(is_end_ev(id)){
+    for(int ev_id : evs[axis]){
+        if(is_end_ev(ev_id)){
             --num_right;
         }
-        float cost = SAH(axis,ev,V,num_left,num_right);
-        if(is_start_ev(id)){
-            ++num_left;
-        }
+        float csplit = axis_events[axis][ev_id];
+        //std::cout << "SAH_ARGS " << num_left << " " << num_right << std::endl;
+        float cost = SAH(axis,csplit,V,num_left,num_right);
         if(cost<best_plane.cost){
             best_plane.cost = cost;
-            best_plane.event_id = i;
-            best_plane.coord = ev;
+            best_plane.coord = csplit;
             best_plane.num_left = num_left;
             best_plane.num_right = num_right;
         }
+        if(is_start_ev(ev_id)){
+            ++num_left;
+        }
     }
+    printf("FBP cost=%f num_left=%d num_right=%d\n",
+        best_plane.cost,best_plane.num_left,best_plane.num_right);
     return best_plane;
 }
 

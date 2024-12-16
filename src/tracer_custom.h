@@ -8,6 +8,8 @@ inline float& vec_c(float3& vec,int a){
     return (&vec.x)[a];
 };
 
+typedef std::array<std::vector<int>,3> axis_ev_ids ;
+
 class GaussiansKDTree{
 public:
     GaussiansKDTree() noexcept{}
@@ -76,31 +78,32 @@ private:
         void set_data_id(int id){
             data = -id;
         }
-        float set_cplane(float c){
+        void set_cplane(float c){
             p = c;
         }
     };
 
     void build();
 
-    void build_rec(AABB V,std::array<std::vector<int>,3> axis_events_ids,int num_part,int depth);
+    void build_rec(AABB V, axis_ev_ids evs,int num_part,int depth);
 
     struct SplitPlane{
         float coord;
-        int event_id;
         float cost;
         int num_left;
         int num_right;
     };
-    SplitPlane find_best_plane(int axis, AABB vol, int2 events_range, int num_part) const;
+    SplitPlane find_best_plane(int axis, AABB vol, axis_ev_ids evs, int num_part) const;
 
-    void fill_leaf_particles(LeafData &leaf, const std::array<int2,3>& event_ranges) const;
+    std::pair<axis_ev_ids,axis_ev_ids> split_events(axis_ev_ids& evs,int split_ax,float csplit) const;
+
+    void fill_leaf_particles(LeafData &leaf, AABB V, const axis_ev_ids& evs) const;
 
     float sa(AABB aabb) const {
         float3 d = aabb.max-aabb.min;
         return 2*(d.x*d.y+d.x*d.z+d.y*d.z);
     };
-    std::pair<AABB,AABB> split(int axis, float p, AABB aabb) const{
+    std::pair<AABB,AABB> split_volume(int axis, float p, AABB aabb) const{
         AABB left=aabb,right=aabb;
         vec_c(left.max,axis) = p;
         vec_c(right.min,axis) = p;
@@ -115,9 +118,12 @@ private:
         return lambda*(K_T + K_I*(Pl*Nl+Pr*Nr));
     }
     float SAH(int axis, float p, AABB V, int Nl, int Nr) const {
-        auto [Vleft,Vright] = split(axis,p,V);
+        auto [Vleft,Vright] = split_volume(axis,p,V);
         float prob_left = sa(Vleft)/sa(V);
         float prob_right = sa(Vright)/sa(V);
+        if(Nl==1 && Nr==1){
+            printf("SAH %f %f\n",prob_left,prob_right);
+        }
         float c = cost(prob_left,prob_right,Nl,Nr);
         return c;
     };
@@ -138,7 +144,6 @@ private:
     //std::array<std::vector<Event>,3> evs_axis_sort;
 
     std::array<std::vector<float>,3> axis_events;
-    std::array<std::vector<int>,3> aabb_start_asort_ids;
 
     bool is_start_ev(int ev_id) const{
         return ev_id < data.numgs;
