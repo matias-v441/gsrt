@@ -161,6 +161,8 @@ struct PyTracerCustom {
     py::dict trace_rays(const torch::Tensor &ray_origins,
                         const torch::Tensor &ray_directions,
                         int width, int height,
+                        int tracer_type,
+                        bool draw_kd,
                         bool compute_grad,
                         const torch::Tensor &dL_dC) {
 
@@ -189,6 +191,8 @@ struct PyTracerCustom {
         tracing_params.debug_map_0 = nullptr;//reinterpret_cast<float3 *>(debug_map_0.data_ptr());
         tracing_params.debug_map_1 = nullptr;//reinterpret_cast<float3 *>(debug_map_1.data_ptr());
         tracing_params.num_its = reinterpret_cast<unsigned long long*>(num_its.data_ptr());
+        tracing_params.tracer_type = tracer_type;
+        tracing_params.draw_kd = draw_kd;
 
         tracer->trace_rays(tracing_params);
 

@@ -8,6 +8,10 @@ inline float& vec_c(float3& vec,int a){
     return (&vec.x)[a];
 };
 
+inline const float& vec_c(const float3& vec,int a){
+    return (&vec.x)[a];
+};
+
 typedef std::array<std::vector<int>,3> axis_ev_ids ;
 
 class GaussiansKDTree{
@@ -22,6 +26,10 @@ public:
     GaussiansKDTree(GaussiansKDTree &&other) noexcept{
         aabbs = std::move(other.aabbs);
         data = other.data;
+        nodes = other.nodes;
+        leaves_data = other.leaves_data;
+        scene_vol = other.scene_vol;
+        node_aabbs = other.node_aabbs;
     }
     GaussiansKDTree &operator=(GaussiansKDTree &&other) {
         using std::swap;
@@ -35,8 +43,17 @@ public:
         using std::swap;
         swap(first.data, second.data);
         swap(first.aabbs, second.aabbs);
+        swap(first.nodes, second.nodes);
+        swap(first.leaves_data, second.leaves_data);
+        swap(first.scene_vol, second.scene_vol);
+        swap(first.node_aabbs, second.node_aabbs);
     }
-    void traverse(const TracingParams& params);
+    void rcast_linear(const TracingParams& params);
+    void rcast_kd(const TracingParams& params);
+    void rcast_kd_restart(const TracingParams& params);
+    void rcast_draw_kd(const TracingParams& params);
+    void draw_aabb(const TracingParams& params, int node_id, int ray_id);
+    void rcast_gpu(const TracingParams& params);
 
     const GaussiansData& get_scene()const {
         return data;
@@ -48,20 +65,21 @@ private:
     struct LeafData
     {
         std::vector<int> part_ids;
+        std::vector<char> plane_masks;
     };
 
-    class Node{
+    class SmallNode{
         float p;
-        int data; 
+        int data = __INT_MAX__; 
     public:
         int axis() const{
             return data & 3;
         }
-        bool is_leaf() const{
+        bool isleaf() const{
             return data <= 0;
         }
         int data_id() const{
-            return std::abs(data);
+            return -data;
         }
         int right_id() const{
             return data >> 2;
@@ -81,11 +99,65 @@ private:
         void set_cplane(float c){
             p = c;
         }
+        bool has_right(){
+            return data == __INT_MAX__;
+        }
+    };
+
+    class Node{
+        int _axis;
+        bool _isleaf;
+        int dataid;
+        int right; 
+        bool hasright;
+        float p;
+    public:
+        int axis() const{
+            return _axis;
+        }
+        bool isleaf() const{
+            return _isleaf;
+        }
+        int data_id() const{
+            return dataid;
+        }
+        int right_id() const{
+            return right;
+        }
+        float cplane() const{
+            return p;
+        }
+        void set_axis(int a){
+            _axis = a; 
+        }
+        void set_right_id(int id){
+            hasright = true;
+            right = id;
+        }
+        void set_data_id(int id){
+            _isleaf = true;
+            dataid = id;
+        }
+        void set_cplane(float c){
+            p = c;
+        }
+        bool has_right(){
+            return hasright;
+        }
+        void set_leaf_empty(){
+            _isleaf = true;
+            dataid = -1;
+        }
+        bool is_leaf_empty(){
+            return dataid == -1;
+        }
     };
 
     void build();
 
     void build_rec(AABB V, axis_ev_ids evs,int num_part,int depth);
+
+    void build_check();
 
     struct SplitPlane{
         float coord;
@@ -99,11 +171,12 @@ private:
 
     void fill_leaf_particles(LeafData &leaf, AABB V, const axis_ev_ids& evs) const;
 
-    float sa(AABB aabb) const {
+    static float sa(AABB aabb) {
         float3 d = aabb.max-aabb.min;
+        if(d.x==0.f || d.y==0.f || d.z==0.f) return 0.f;
         return 2*(d.x*d.y+d.x*d.z+d.y*d.z);
     };
-    std::pair<AABB,AABB> split_volume(int axis, float p, AABB aabb) const{
+    static std::pair<AABB,AABB> split_volume(int axis, float p, AABB aabb) {
         AABB left=aabb,right=aabb;
         vec_c(left.max,axis) = p;
         vec_c(right.min,axis) = p;
@@ -113,24 +186,38 @@ private:
     static constexpr float K_I = 3.;
     static constexpr int MAX_LEAF_SIZE = 1024;
 
-    float cost(float Pl, float Pr, int Nl, int Nr) const {
-        float lambda = (Nl==0 || Nr==0)? 0.8 : 1.; // bias towards empty splits
-        return lambda*(K_T + K_I*(Pl*Nl+Pr*Nr));
+    int maxdepth() const{
+        constexpr float k1 = 3;
+        constexpr float k2 = 1.25;
+        return k1+k2*logf(static_cast<float>(data.numgs));
     }
-    float SAH(int axis, float p, AABB V, int Nl, int Nr) const {
+
+    static float cost(float Pl, float Pr, int Nl, int Nr) {
+        //float lambda = (Nl==0 || Nr==0)? 0.8 : 1.; // bias towards empty splits
+        //return lambda*(K_T + K_I*(Pl*Nl+Pr*Nr));
+        return K_T + K_I*(Pl*(Nl+Nl*logf(static_cast<float>(Nl)))
+                          +Pr*(Nr+Nr*logf(static_cast<float>(Nr))));
+        //return K_T + K_I*(Pl*(Nl+Nl*Nl+exp(static_cast<float>(Nl)))
+        //                  +Pr*(Nr+Nr*Nr+exp(static_cast<float>(Nr))));
+    }//
+    static float SAH(int axis, float p, AABB V, int Nl, int Nr) {
         auto [Vleft,Vright] = split_volume(axis,p,V);
+        // printf("SAH V %f max %f\n",vec_c(V.min,axis),vec_c(V.max,axis));
+        // printf("SAH Vleft %f max %f\n",vec_c(Vleft.min,axis),vec_c(Vleft.max,axis));
+        // printf("SAH Vright %f max %f\n",vec_c(Vright.min,axis),vec_c(Vright.max,axis));
         float prob_left = sa(Vleft)/sa(V);
         float prob_right = sa(Vright)/sa(V);
-        if(Nl==1 && Nr==1){
-            printf("SAH %f %f\n",prob_left,prob_right);
-        }
+        // printf("SAH cost %f %f %d %d\n",prob_left,prob_right,Nl,Nr);
         float c = cost(prob_left,prob_right,Nl,Nr);
         return c;
     };
  
     std::vector<AABB> aabbs;
+    AABB scene_vol;
 
     std::vector<Node> nodes;
+
+    std::vector<AABB> node_aabbs;
     
     std::vector<LeafData> leaves_data;
 
@@ -154,7 +241,6 @@ private:
     int ev2part_id(int ev_id) const{
         return ev_id % data.numgs;
     }
-
     GaussiansData data;
 };
 
@@ -167,8 +253,15 @@ public:
     }
 
     void trace_rays(const TracingParams &tracing_params){
-        scene_as.traverse(tracing_params);
-    }
+        if(tracing_params.tracer_type == 1)
+            scene_as.rcast_kd_restart(tracing_params);
+        if(tracing_params.tracer_type == 2)
+            scene_as.rcast_kd(tracing_params);
+        if(tracing_params.tracer_type == 0)
+            scene_as.rcast_linear(tracing_params);
+        if(tracing_params.tracer_type == 3)
+            scene_as.rcast_draw_kd(tracing_params);
+        }
 private:
     GaussiansKDTree scene_as;
 };

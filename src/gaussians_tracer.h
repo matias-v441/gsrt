@@ -51,6 +51,9 @@ struct TracingParams
     float3 *grad_sh;
 
     float3* dL_dC;
+
+    int tracer_type;
+    bool draw_kd;
 };
 
 struct SceneBuffers{
