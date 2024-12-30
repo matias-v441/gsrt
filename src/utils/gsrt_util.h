@@ -1,3 +1,4 @@
+#pragma once
 #include "vec_math.h"
 #include "Matrix.h"
 using namespace util;
@@ -19,10 +20,10 @@ Matrix3x3 construct_rotation(float4 vec){
 }
 
 namespace icosahedron{
-    constexpr float x = sqrt(.4f*(5.f+sqrt(5.f))) *.5f;
-    constexpr float y = x*(1.f+sqrt(5.f))*.5f;
-    constexpr int n_verts = 12;
-    constexpr int n_faces = 20;
+    const float x = sqrt(.4f*(5.f+sqrt(5.f))) *.5f;
+    const float y = x*(1.f+sqrt(5.f))*.5f;
+    const int n_verts = 12;
+    const int n_faces = 20;
     float3 vertices[n_verts] = {
         make_float3(-x,y,0.f),make_float3(x,y,0.f),make_float3(-x,-y,0.f),make_float3(x,-y,0.f),
         make_float3(0.f,-x,y),make_float3(0.f,x,y),make_float3(0.f,-x,-y),make_float3(0.f,x,-y),

@@ -5,7 +5,7 @@ from nerfbaselines import Cameras, CameraModel
 from nerfbaselines import cameras
 import torch
 
-from extension import GaussiansTracer
+from extension import GaussiansTracer,TracerCustom
 
 class GSRTMethod(Method):
     def __init__(self, *,
@@ -15,7 +15,8 @@ class GSRTMethod(Method):
         super().__init__()
 
         self.device = torch.device("cuda:0")
-        self.tracer = GaussiansTracer(self.device)
+        #self.tracer = GaussiansTracer(self.device)
+        self.tracer = TracerCustom(self.device)
 
         self.checkpoint = checkpoint
 
@@ -39,6 +40,7 @@ class GSRTMethod(Method):
         gs_sh = torch.cat((gs_features_dc,gs_features_rest),dim=1).contiguous()
 
         self.tracer.load_gaussians(gs_xyz,gs_rotation,gs_scaling,gs_opacity,gs_sh,gs_active_sh_degree)
+
 
     def save(self, path):
         pass
@@ -128,10 +130,16 @@ class GSRTMethod(Method):
         time_ms = 0
         nit = 1
         for i in range(nit):
+            #res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
+            #                             ray_directions.float().squeeze(0).contiguous(),
+            #                             res_x, res_y,
+            #                             False)
+            draw_kd = False
+            tracer_type = 5
             res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
                                          ray_directions.float().squeeze(0).contiguous(),
-                                         res_x, res_y,
-                                         False)
+                                         res_x,res_y,
+                                         tracer_type,draw_kd,False,torch.tensor(0.))
             time_ms += res["time_ms"]
             #print(i,time_ms)
             #print(res["num_its"])

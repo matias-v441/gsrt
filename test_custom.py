@@ -62,13 +62,14 @@ part_sh = torch.cat((part_features_dc,part_features_rest),dim=1).contiguous()
 # print(torch.sum(mask))
 
 use_custom = True
-tracer_type = 1
+tracer_type = 5
 draw_kd = False
 
 if use_custom:
     tracer = TracerCustom(device)
 else:
     tracer = GaussiansTracer(device)
+
 
 tracer.load_gaussians(part_xyz,part_rot,part_scale,
                       part_opac,part_sh,
@@ -115,7 +116,7 @@ ray_directions = -c_rays @ c2w.T
 ray_directions /= ray_directions.norm(dim=1)[:,None]
 ray_directions = ray_directions.float().contiguous()
 #print(ray_origins,ray_directions)
-if not use_custom:
+if not use_custom or tracer_type == 5:
     ray_origins = ray_origins.to(device=device)
     ray_directions = ray_directions.to(device=device)
 

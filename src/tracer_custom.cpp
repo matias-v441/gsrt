@@ -66,6 +66,8 @@ void GaussiansKDTree::build(){
         max_leaf_size = max(leaf.part_ids.size(),max_leaf_size);
     }
     std::cout << "max leaf size: " << max_leaf_size << std::endl;
+
+    cuda_traversal = std::make_unique<CUDA_Traversal>(*this);
 }
 
 void GaussiansKDTree::build_rec(AABB V,
@@ -475,9 +477,14 @@ void GaussiansKDTree::rcast_kd(const TracingParams &tracing_params){
     }
 }
 
-//#include "tracer_custom.cuh"
 
 void GaussiansKDTree::rcast_gpu(const TracingParams& params){
+    std::cout << "rcast_gpu" << std::endl;
+    if(cuda_traversal != nullptr){
+        cuda_traversal->rcast_kd_restart(params);
+    }else{
+        std::cout << "not initialized" << std::endl;
+    }
 }
 
 void GaussiansKDTree::rcast_kd_restart(const TracingParams &tracing_params){

@@ -1,18 +1,112 @@
+#pragma once
 #include "gaussians_tracer.h"
 #include "utils/vec_math.h"
 #include <vector>
 #include <iostream>
 #include <array>
+#include <memory>
 
-inline float& vec_c(float3& vec,int a){
-    return (&vec.x)[a];
-};
-
-inline const float& vec_c(const float3& vec,int a){
-    return (&vec.x)[a];
-};
+#include "tracer_cu.cuh"
 
 typedef std::array<std::vector<int>,3> axis_ev_ids ;
+
+namespace kdtree_impl
+{
+
+struct AABB;
+
+struct LeafData
+{
+    std::vector<int> part_ids;
+    std::vector<char> plane_masks;
+};
+
+// class SmallNode{
+//     float p;
+//     int data = __INT_MAX__; 
+// public:
+//     int axis() const{
+//         return data & 3;
+//     }
+//     bool isleaf() const{
+//         return data <= 0;
+//     }
+//     int data_id() const{
+//         return -data;
+//     }
+//     int right_id() const{
+//         return data >> 2;
+//     }
+//     float cplane() const{
+//         return p;
+//     }
+//     void set_axis(int axis){
+//         data += axis%3;
+//     }
+//     void set_right_id(int id){
+//         data = (id<<2) + axis();
+//     }
+//     void set_data_id(int id){
+//         data = -id;
+//     }
+//     void set_cplane(float c){
+//         p = c;
+//     }
+//     bool has_right(){
+//         return data == __INT_MAX__;
+//     }
+// };
+// 
+class Node{
+    int _axis;
+    bool _isleaf;
+    int dataid;
+    int right; 
+    bool hasright;
+    float p;
+public:
+    HOSTDEVICE int axis() const{
+        return _axis;
+    }
+    HOSTDEVICE bool isleaf() const{
+        return _isleaf;
+    }
+    HOSTDEVICE int data_id() const{
+        return dataid;
+    }
+    HOSTDEVICE int right_id() const{
+        return right;
+    }
+    HOSTDEVICE float cplane() const{
+        return p;
+    }
+    void set_axis(int a){
+        _axis = a; 
+    }
+    void set_right_id(int id){
+        hasright = true;
+        right = id;
+    }
+    void set_data_id(int id){
+        _isleaf = true;
+        dataid = id;
+    }
+    void set_cplane(float c){
+        p = c;
+    }
+    HOSTDEVICE bool has_right(){
+        return hasright;
+    }
+    void set_leaf_empty(){
+        _isleaf = true;
+        dataid = -1;
+    }
+    HOSTDEVICE bool is_leaf_empty(){
+        return dataid == -1;
+    }
+};
+
+class CUDA_Traversal;
 
 class GaussiansKDTree{
 public:
@@ -30,6 +124,7 @@ public:
         leaves_data = other.leaves_data;
         scene_vol = other.scene_vol;
         node_aabbs = other.node_aabbs;
+        cuda_traversal = std::move(other.cuda_traversal);
     }
     GaussiansKDTree &operator=(GaussiansKDTree &&other) {
         using std::swap;
@@ -47,6 +142,7 @@ public:
         swap(first.leaves_data, second.leaves_data);
         swap(first.scene_vol, second.scene_vol);
         swap(first.node_aabbs, second.node_aabbs);
+        swap(first.cuda_traversal, second.cuda_traversal);
     }
     void rcast_linear(const TracingParams& params);
     void rcast_kd(const TracingParams& params);
@@ -60,104 +156,14 @@ public:
     }
 private:
 
-    struct AABB { float3 min, max; };
-
-    struct LeafData
-    {
-        std::vector<int> part_ids;
-        std::vector<char> plane_masks;
-    };
-
-    class SmallNode{
-        float p;
-        int data = __INT_MAX__; 
-    public:
-        int axis() const{
-            return data & 3;
-        }
-        bool isleaf() const{
-            return data <= 0;
-        }
-        int data_id() const{
-            return -data;
-        }
-        int right_id() const{
-            return data >> 2;
-        }
-        float cplane() const{
-            return p;
-        }
-        void set_axis(int axis){
-            data += axis%3;
-        }
-        void set_right_id(int id){
-            data = (id<<2) + axis();
-        }
-        void set_data_id(int id){
-            data = -id;
-        }
-        void set_cplane(float c){
-            p = c;
-        }
-        bool has_right(){
-            return data == __INT_MAX__;
-        }
-    };
-
-    class Node{
-        int _axis;
-        bool _isleaf;
-        int dataid;
-        int right; 
-        bool hasright;
-        float p;
-    public:
-        int axis() const{
-            return _axis;
-        }
-        bool isleaf() const{
-            return _isleaf;
-        }
-        int data_id() const{
-            return dataid;
-        }
-        int right_id() const{
-            return right;
-        }
-        float cplane() const{
-            return p;
-        }
-        void set_axis(int a){
-            _axis = a; 
-        }
-        void set_right_id(int id){
-            hasright = true;
-            right = id;
-        }
-        void set_data_id(int id){
-            _isleaf = true;
-            dataid = id;
-        }
-        void set_cplane(float c){
-            p = c;
-        }
-        bool has_right(){
-            return hasright;
-        }
-        void set_leaf_empty(){
-            _isleaf = true;
-            dataid = -1;
-        }
-        bool is_leaf_empty(){
-            return dataid == -1;
-        }
-    };
 
     void build();
 
     void build_rec(AABB V, axis_ev_ids evs,int num_part,int depth);
 
     void build_check();
+
+    void init_device();
 
     struct SplitPlane{
         float coord;
@@ -221,6 +227,8 @@ private:
     
     std::vector<LeafData> leaves_data;
 
+    std::unique_ptr<CUDA_Traversal> cuda_traversal;
+
     //enum class EventType:bool{START,END};
     //struct Event{
     //    EventType type;
@@ -242,7 +250,13 @@ private:
         return ev_id % data.numgs;
     }
     GaussiansData data;
+
+    friend CUDA_Traversal;
 };
+
+}
+
+using namespace kdtree_impl;
 
 class TracerCustom{
 public:
@@ -261,7 +275,9 @@ public:
             scene_as.rcast_linear(tracing_params);
         if(tracing_params.tracer_type == 3)
             scene_as.rcast_draw_kd(tracing_params);
+        if(tracing_params.tracer_type == 5)
+            scene_as.rcast_gpu(tracing_params);
         }
 private:
-    GaussiansKDTree scene_as;
+    kdtree_impl::GaussiansKDTree scene_as;
 };
