@@ -10,6 +10,21 @@
 
 typedef std::array<std::vector<int>,3> axis_ev_ids ;
 
+enum class CFType{
+    Default,
+    EmptySpaceBias,
+    Sorting,
+    SomethingElse
+};
+
+struct ASParams{
+    CFType cf_type;
+    float K_T = 2.;
+    float K_I = 3.;
+    float k1 = 3.;
+    float k2 = 1.25;
+};
+
 namespace kdtree_impl
 {
 
@@ -60,7 +75,7 @@ struct LeafData
 class Node{
     int _axis;
     bool _isleaf;
-    int dataid;
+    int dataid=-1;
     int right; 
     bool hasright;
     float p;
@@ -111,7 +126,8 @@ class CUDA_Traversal;
 class GaussiansKDTree{
 public:
     GaussiansKDTree() noexcept{}
-    GaussiansKDTree(const GaussiansData& data):data(data){
+    GaussiansKDTree(const GaussiansData& data, const ASParams& params)
+        : data(data),params(params){
         build();
     }
     ~GaussiansKDTree() noexcept(true){}
@@ -125,6 +141,7 @@ public:
         scene_vol = other.scene_vol;
         node_aabbs = other.node_aabbs;
         cuda_traversal = std::move(other.cuda_traversal);
+        params = other.params;
     }
     GaussiansKDTree &operator=(GaussiansKDTree &&other) {
         using std::swap;
@@ -143,6 +160,7 @@ public:
         swap(first.scene_vol, second.scene_vol);
         swap(first.node_aabbs, second.node_aabbs);
         swap(first.cuda_traversal, second.cuda_traversal);
+        swap(first.params, second.params);
     }
     void rcast_linear(const TracingParams& params);
     void rcast_kd(const TracingParams& params);
@@ -154,6 +172,9 @@ public:
     const GaussiansData& get_scene()const {
         return data;
     }
+
+    static constexpr int MAX_LEAF_SIZE = 1024;
+
 private:
 
 
@@ -188,25 +209,38 @@ private:
         vec_c(right.min,axis) = p;
         return {left,right};
     }
-    static constexpr float K_T = 2.;
-    static constexpr float K_I = 3.;
-    static constexpr int MAX_LEAF_SIZE = 1024;
 
     int maxdepth() const{
-        constexpr float k1 = 3;
-        constexpr float k2 = 1.25;
-        return k1+k2*logf(static_cast<float>(data.numgs));
+        return params.k1+params.k2*logf(static_cast<float>(data.numgs));
     }
 
-    static float cost(float Pl, float Pr, int Nl, int Nr) {
-        //float lambda = (Nl==0 || Nr==0)? 0.8 : 1.; // bias towards empty splits
-        //return lambda*(K_T + K_I*(Pl*Nl+Pr*Nr));
-        return K_T + K_I*(Pl*(Nl+Nl*logf(static_cast<float>(Nl)))
-                          +Pr*(Nr+Nr*logf(static_cast<float>(Nr))));
-        //return K_T + K_I*(Pl*(Nl+Nl*Nl+exp(static_cast<float>(Nl)))
-        //                  +Pr*(Nr+Nr*Nr+exp(static_cast<float>(Nr))));
+    float cost(float Pl, float Pr, int Nl, int Nr) const {
+        float K_T = params.K_T;
+        float K_I = params.K_I;
+        switch (params.cf_type)
+        {
+        case CFType::Default :
+        {
+            return K_T + K_I*(Pl*Nl+Pr*Nr); 
+        }
+        case CFType::EmptySpaceBias :
+        {
+            float lambda = (Nl==0 || Nr==0)? 0.8 : 1.; // bias towards empty splits
+            return lambda*(K_T + K_I*(Pl*Nl+Pr*Nr));
+        }
+        case CFType::Sorting :
+        {
+            return K_T + K_I*(Pl*(Nl+Nl*logf(static_cast<float>(Nl)))
+                       + Pr*(Nr+Nr*logf(static_cast<float>(Nr)))); 
+        }
+        case CFType::SomethingElse :
+        {
+            return K_T + K_I*(Pl*(Nl+Nl*Nl+exp(static_cast<float>(Nl)))
+                       + Pr*(Nr+Nr*Nr+exp(static_cast<float>(Nr)))); 
+        }
+        }
     }//
-    static float SAH(int axis, float p, AABB V, int Nl, int Nr) {
+    float SAH(int axis, float p, AABB V, int Nl, int Nr) const {
         auto [Vleft,Vright] = split_volume(axis,p,V);
         // printf("SAH V %f max %f\n",vec_c(V.min,axis),vec_c(V.max,axis));
         // printf("SAH Vleft %f max %f\n",vec_c(Vleft.min,axis),vec_c(Vleft.max,axis));
@@ -228,6 +262,8 @@ private:
     std::vector<LeafData> leaves_data;
 
     std::unique_ptr<CUDA_Traversal> cuda_traversal;
+
+    ASParams params;
 
     //enum class EventType:bool{START,END};
     //struct Event{
@@ -262,8 +298,8 @@ class TracerCustom{
 public:
     TracerCustom(int8_t device){}
     ~TracerCustom() noexcept(true){}
-    void load_gaussians(const GaussiansData& data) {
-        scene_as = std::move(GaussiansKDTree(data));
+    void load_gaussians(const GaussiansData& data, const ASParams& params) {
+        scene_as = std::move(GaussiansKDTree(data,params));
     }
 
     void trace_rays(const TracingParams &tracing_params){

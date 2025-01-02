@@ -49,14 +49,6 @@ void GaussiansKDTree::build(){
         axis_events_asort[axis] = std::move(event_ids);
         axis_events[axis] = std::move(events);
     }
-    // std::cout << "axis events" << std::endl;
-    // for(int a=0; a<3; ++a){
-    //     std::cout << "axis " << a << std::endl;
-    //     for(int ev : axis_events_asort[a]){
-    //         std::cout << axis_events[a][ev] << " ";
-    //     }
-    //     std::cout << std::endl;
-    // }
     build_rec(scene_vol,axis_events_asort,data.numgs,0);
     build_check();
     std::cout << "num. nodes: " << nodes.size() << std::endl;
@@ -74,9 +66,7 @@ void GaussiansKDTree::build_rec(AABB V,
                                 axis_ev_ids evs,
                                 int num_part,
                                 int depth){
-    // printf("----------- depth %d\n",depth);
-    // printf("num_part %d\n",num_part);
-    //if(evs[0].size()<=2) return;
+    
     int axis = depth%3; // round-robin
 
     int node_id = nodes.size();
@@ -89,11 +79,7 @@ void GaussiansKDTree::build_rec(AABB V,
         return;
     }
 
-    // printf("volume min %f max %f\n",vec_c(V.min,axis),vec_c(V.max,axis));
     SplitPlane best_plane = find_best_plane(axis, V, evs, num_part);
-    // std::cout << "cost nosplit " << cost(0.f,1.f,0,num_part) << std::endl;
-    // std::cout << "cost split " << best_plane.cost << std::endl;
-    // std::cout << "maxdepth " << maxdepth() << std::endl;
     
     if(depth == maxdepth() ||
         best_plane.coord == vec_c(V.min,axis) || // same as no split
@@ -106,11 +92,10 @@ void GaussiansKDTree::build_rec(AABB V,
     nodes[node_id].set_axis(axis);
     nodes[node_id].set_cplane(best_plane.coord);
 
-    // printf("best plane coord %f\n",best_plane.coord);
-    
     auto [Vleft,Vright] = split_volume(axis,best_plane.coord,V);
     auto [evs_left,evs_right] = split_events(evs,axis,best_plane.coord);
     
+                        // dont add empty leaves
     bool go_left = true;//best_plane.num_left != 0;
     bool go_right = true;//best_plane.num_right != 0;
     if(go_left){

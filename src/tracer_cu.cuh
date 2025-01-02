@@ -19,10 +19,12 @@ namespace kdtree_impl{
 		Node* d_nodes = 0;
 		AABB* d_aabbs = 0;
 		int* d_leaves = 0;
+		AABB* d_node_aabbs = 0;
 		GaussiansData d_gaussians;
 		AABB scene_vol;
 		std::vector<int> leaves_data;
 		GaussiansData gaussians;
 		std::vector<Node> nodes;
+		std::vector<AABB> node_aabbs;
 	};
 }

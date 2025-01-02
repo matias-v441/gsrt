@@ -17,6 +17,12 @@ class GSRTMethod(Method):
         self.device = torch.device("cuda:0")
         #self.tracer = GaussiansTracer(self.device)
         self.tracer = TracerCustom(self.device)
+        cf_type = 1
+        K_I = 2.
+        K_T = 3.
+        k1 = 3.
+        k2 = 1.25
+        self.tracer.set_parameters(cf_type,K_I,K_T,k1,k2)
 
         self.checkpoint = checkpoint
 
@@ -152,7 +158,7 @@ class GSRTMethod(Method):
         time_ms = res["time_ms"]
         num_its = res["num_its"]
         #print(num_its)
-        print(1000/time_ms, num_its/time_ms, res_x,res_y)
+        print(1000/time_ms, num_its/(res_x*res_y), res_x,res_y)
         
         return {
             "color": color,# + transmittance,

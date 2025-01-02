@@ -94,13 +94,17 @@ __device__ float3 _computeRadiance(const float3* sh, int sh_deg, const float3 mu
 
 __device__ bool _intersectAABB(const float3 min, const float3 max,
                     const float3 orig, const float3 dir,
-                    float& tmin, float& tmax){
+                    float& tmin, float& tmax, char& closest_plane_mask){
     float3 idir = 1.f/dir;
     float3 tc1 = (min-orig)*idir;
     float3 tc2 = (max-orig)*idir;
     float3 tc_min = fminf(tc1,tc2);
     float3 tc_max = fmaxf(tc1,tc2);
     tmin = fmax(tc_min.x,fmax(tc_min.y,tc_min.z));
+	int ax = 0;
+	if(tmin == tc_min.y) ax = 1;
+	if(tmin == tc_min.z) ax = 2;
+	closest_plane_mask = 1 << (ax*2 + (vec_c(dir,ax) > 0));
     tmax = fmin(tc_max.x,fmin(tc_max.y,tc_max.z));
     return tmin < tmax;
 }
@@ -145,10 +149,34 @@ __device__ void process_hit(Hit hit, const GaussiansData& data, float& trans, fl
 	trans *= (1-hit.resp);
 }
 
+__device__ void draw_aabb(const TracingParams& params, const AABB* node_aabbs, int node_id, int ray_id, float3 color){
+    const float3 orig = params.ray_origins[ray_id];
+    const float3 dir = params.ray_directions[ray_id];
+    float aabb_tmin,aabb_tmax;char _;
+    if(_intersectAABB(node_aabbs[node_id].min,node_aabbs[node_id].max,orig,dir,aabb_tmin,aabb_tmax,_)){
+        for(float t : {aabb_tmin,aabb_tmax}){
+            float3 pos = t*dir+orig;
+            float3 dmin = pos-node_aabbs[node_id].min;
+            float3 dmax = node_aabbs[node_id].max-pos;
+            const float thr = .005f;
+            int c = 0;
+            for(int k = 0; k < 3; ++k){
+                if(vec_c(dmin,k)<thr || vec_c(dmax,k)<thr){
+                    ++c;
+                }
+            }
+            if(c == 2){
+                params.radiance[ray_id] = color;
+            }
+        }
+        //tracing_params.radiance[ray_id] += float3{1.,0.,0.};
+    }
+}
+
 __global__ void _rcast_kd_restart(
 	TracingParams params, AABB scene_vol,
 	const AABB* aabbs, const Node* nodes, const int* leaves_data,
-	GaussiansData data
+	GaussiansData data, const AABB* node_aabbs
 	) {
 
 	int i = (blockDim.y*blockIdx.y + threadIdx.y) * params.width
@@ -158,8 +186,8 @@ __global__ void _rcast_kd_restart(
 	const float3 orig = params.ray_origins[i];
 	const float3 dir = params.ray_directions[i];
 
-	float sceneMin,sceneMax;
-	if(!_intersectAABB(scene_vol.min,scene_vol.max,orig,dir,sceneMin,sceneMax))
+	float sceneMin,sceneMax;char _;
+	if(!_intersectAABB(scene_vol.min,scene_vol.max,orig,dir,sceneMin,sceneMax,_))
 		return;
 
 	float tmin,tmax;
@@ -168,23 +196,22 @@ __global__ void _rcast_kd_restart(
 	float3 acc_rad = make_float3(0.);
 	float acc_trans = 1.f;
 	char leaf_plane_mask = 0;
-	constexpr float Tmin = 0.001;
-	constexpr float respMin = 0.01f;
+	constexpr float trans_min = 0.001;
+	constexpr float resp_min = 0.01f;
+	bool first_leaf = true;
 	while(tmax < sceneMax){
 		int inode = iroot;
 		Node node = nodes[inode];
 		tmin = tmax;
 		tmax = sceneMax;
 		bool pushdown = true;
-		char n_leaf_plane_mask = 0;
+		//char n_leaf_plane_mask = init_plane_mask;
 		while(!node.isleaf()){
-			//if(tracing_params.draw_kd)
-			//	draw_aabb(tracing_params,inode,i);
+			if(params.draw_kd) draw_aabb(params,node_aabbs,inode,i,{1.,0.,0.});
 			int ax = node.axis();
 			float tsplit = (node.cplane()-vec_c(orig,ax))/vec_c(dir,ax);
 			int ifirst = inode+1;
 			int isecond = node.has_right()? node.right_id(): -1;
-			//if(vec_c(orig,ax)>node.cplane()) std::swap(ifirst,isecond);
 			if(vec_c(dir,ax)<0){
 				int s = isecond; isecond = ifirst; ifirst = s;
 			}
@@ -196,9 +223,8 @@ __global__ void _rcast_kd_restart(
 				inode = ifirst;
 				tmax = tsplit;
 				pushdown = false;
-				bool ismax = vec_c(dir,ax) > 0;
 				// ignore-mask for the particles on the opposite side
-				n_leaf_plane_mask = 1 << (ax*2 + !ismax); 
+				//n_leaf_plane_mask = 1 << (ax*2 + (vec_c(dir,ax) <= 0)); 
 			}
 			if(pushdown){
 				iroot=inode;
@@ -207,10 +233,21 @@ __global__ void _rcast_kd_restart(
 			node = nodes[inode];
 		}
 		if(inode != -1 && node.isleaf()){
-			//if(tracing_params.draw_kd)
-			//	draw_aabb(tracing_params,inode,i);
-			if(node.is_leaf_empty()) continue;
-			constexpr long hits_cap = 2048;
+			float leaf_tmin,leaf_tmax; char closest_plane_mask;
+			if(!_intersectAABB(node_aabbs[inode].min,node_aabbs[inode].max,orig,dir,leaf_tmin,leaf_tmax,closest_plane_mask)){
+				assert(false);
+				params.radiance[i] = float3{1.f,0.f,0.f};return;
+			}
+			if(!first_leaf){
+				leaf_plane_mask = closest_plane_mask;
+			}
+			first_leaf = false;
+			if(node.is_leaf_empty()){
+				if(params.draw_kd) draw_aabb(params,node_aabbs,inode,i,{0.,0.,1.});
+				continue;
+			}
+			if(params.draw_kd) draw_aabb(params,node_aabbs,inode,i,{0.,1.,0.});
+			constexpr int hits_cap = GaussiansKDTree::MAX_LEAF_SIZE;
 			Hit hits[hits_cap];
 			unsigned int hitq_size = 0;
 			// get particle intersections
@@ -218,27 +255,26 @@ __global__ void _rcast_kd_restart(
 			const int *part_ids = leaves_data+node.data_id()+1;
 			const char* plane_masks = reinterpret_cast<const char*>(leaves_data+node.data_id()+1+leaf_size);
 
-			//params.radiance[i] = float3{1.,0.,0.};
 			for(int k = 0; k < leaf_size; ++k){
 				if(plane_masks[i] & leaf_plane_mask)
 				 	continue; // -> this particle was processed in the previous leaf
 				
 				int part_id = part_ids[k];
-				float part_tmin,part_tmax;
-				if(_intersectAABB(aabbs[part_id].min,aabbs[part_id].max,orig,dir,part_tmin,part_tmax))
+				float part_tmin,part_tmax;char _;
+				if(_intersectAABB(aabbs[part_id].min,aabbs[part_id].max,orig,dir,part_tmin,part_tmax,_))
 				{
-					//params.radiance[i] = float3{0.,1.,0.};
 					if(hitq_size == hits_cap){
 						process_hit(hits[0],data,acc_trans,acc_rad,orig);
 						popHit(hits,hitq_size);
-						if(acc_trans < Tmin){
+						if(acc_trans < trans_min){
 							tmax = sceneMax;
 							break;
 						}
 					}
 					float resp,tmaxresp;
 					_computeResponse(data,part_id,orig,dir,resp,tmaxresp);
-					if(resp < respMin) continue;
+					if(resp < resp_min) continue;
+					atomicAdd(params.num_its,1ull);
 					Hit hit{part_id,resp,tmaxresp};
 					pushHit(hits,hitq_size,hit);
 				}
@@ -246,28 +282,23 @@ __global__ void _rcast_kd_restart(
 			while(hitq_size != 0){
 				process_hit(hits[0],data,acc_trans,acc_rad,orig);
 				popHit(hits,hitq_size);
-				if(acc_trans < Tmin){
+				if(acc_trans < trans_min){
 					tmax = sceneMax;
 					break;
 				}
 			}
 			// set the particle mask for the next leaf
-			leaf_plane_mask = n_leaf_plane_mask;
-			// process hits
-			// for(int k = 0; k < hits; ++k){
-			// 	for(int c = 0; c < hits; ++c){}
-			// }
-			//for(const Hit& hit : hits){
-			//	float3 rad = hit.rad;//make_float3(1.);
-			//	acc_rad += rad*hit.resp*acc_trans;
-			//	acc_trans *= (1-hit.resp);
-			//	(*tracing_params.num_its)++;
-			//}
+			//leaf_plane_mask = n_leaf_plane_mask;
+			//leaf_plane_mask = next_plane_mask;
 		}
 	}
 	params.radiance[i] += acc_rad;
 }
 
+auto to_device (auto& dst, void* src, size_t size){
+	CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&dst), size),true);
+	CHECK_CUDA(cudaMemcpy(reinterpret_cast<void*>(dst), src, size, cudaMemcpyHostToDevice),true);
+};
 
 void CUDA_Traversal::rcast_kd_restart(const TracingParams& params){
 #ifdef PRESORT
@@ -308,29 +339,31 @@ void CUDA_Traversal::rcast_kd_restart(const TracingParams& params){
 	dim3 blocks((params.width+BLOCK_DIM-1)/BLOCK_DIM,(params.height+BLOCK_DIM-1)/BLOCK_DIM);
 	dim3 threads(BLOCK_DIM,BLOCK_DIM);
 
+	//if(params.draw_kd && d_node_aabbs == 0)
+		to_device(d_node_aabbs, node_aabbs.data(), node_aabbs.size()*sizeof(AABB));
+
 	printf("gpu_trace %dx%d %dx%d \n", blocks.x,blocks.y, threads.x,threads.y);
 	_rcast_kd_restart<<<blocks,threads>>>(
-	 	params,scene_vol,d_aabbs,d_nodes,d_leaves,d_gaussians
+	 	params,scene_vol,d_aabbs,d_nodes,d_leaves,d_gaussians,d_node_aabbs
 		);
 	CHECK_CUDA(,true);
 }
+
 
 CUDA_Traversal::CUDA_Traversal(GaussiansKDTree& kdtree){
 
 	std::cout << "initializing cuda" << std::endl;
 
-    auto toDevice = [&](auto& dst, void* src, size_t size){
-        CHECK_CUDA(cudaMalloc(reinterpret_cast<void**>(&dst), size),true);
-        CHECK_CUDA(cudaMemcpy(reinterpret_cast<void*>(dst), src, size, cudaMemcpyHostToDevice),true);
-    };
+   
 	const auto& data = kdtree.data;
     d_gaussians.numgs = data.numgs;
-    toDevice(d_gaussians.xyz, data.xyz, data.numgs*sizeof(float3));
-    toDevice(d_gaussians.rotation, data.rotation, data.numgs*sizeof(float4));
-    toDevice(d_gaussians.scaling, data.scaling, data.numgs*sizeof(float3));
-    toDevice(d_gaussians.opacity, data.opacity, data.numgs*sizeof(float));
-    toDevice(d_gaussians.sh, data.sh, data.numgs*sizeof(float3)*16);
-	toDevice(d_aabbs, kdtree.aabbs.data(), kdtree.aabbs.size()*sizeof(AABB));
+    to_device(d_gaussians.xyz, data.xyz, data.numgs*sizeof(float3));
+    to_device(d_gaussians.rotation, data.rotation, data.numgs*sizeof(float4));
+    to_device(d_gaussians.scaling, data.scaling, data.numgs*sizeof(float3));
+    to_device(d_gaussians.opacity, data.opacity, data.numgs*sizeof(float));
+    to_device(d_gaussians.sh, data.sh, data.numgs*sizeof(float3)*16);
+	to_device(d_aabbs, kdtree.aabbs.data(), kdtree.aabbs.size()*sizeof(AABB));
+	//to_device(d_node_aabbs, node_aabbs.data(), node_aabbs.size()*sizeof(AABB));
 
 	scene_vol = kdtree.scene_vol;
 
@@ -355,11 +388,12 @@ CUDA_Traversal::CUDA_Traversal(GaussiansKDTree& kdtree){
 			node.set_data_id(n_leaf_data_ids[node.data_id()]);
 		}
 	}
-	toDevice(d_nodes, nodes.data(), nodes.size()*sizeof(Node));
-	toDevice(d_leaves, leaves_data.data(), leaves_data.size()*sizeof(int));
+	to_device(d_nodes, nodes.data(), nodes.size()*sizeof(Node));
+	to_device(d_leaves, leaves_data.data(), leaves_data.size()*sizeof(int));
 	this->nodes = std::move(nodes);
 	this->leaves_data = std::move(leaves_data);
 	this->gaussians = kdtree.data;
+	this->node_aabbs = kdtree.node_aabbs;
 }
 
 CUDA_Traversal::~CUDA_Traversal(){
@@ -372,5 +406,6 @@ CUDA_Traversal::~CUDA_Traversal(){
     CHECK_CUDA(cudaFree(d_aabbs),true);
     CHECK_CUDA(cudaFree(d_nodes),true);
     CHECK_CUDA(cudaFree(d_leaves),true);
+	if(d_node_aabbs != 0) CHECK_CUDA(cudaFree(d_node_aabbs),true);
 }
 

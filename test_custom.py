@@ -67,6 +67,12 @@ draw_kd = False
 
 if use_custom:
     tracer = TracerCustom(device)
+    cf_type = 1
+    K_I = 2.
+    K_T = 3.
+    k1 = 3.
+    k2 = 1.25
+    tracer.set_parameters(cf_type,K_I,K_T,k1,k2)
 else:
     tracer = GaussiansTracer(device)
 
