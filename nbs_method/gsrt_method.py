@@ -15,14 +15,17 @@ class GSRTMethod(Method):
         super().__init__()
 
         self.device = torch.device("cuda:0")
-        #self.tracer = GaussiansTracer(self.device)
-        self.tracer = TracerCustom(self.device)
-        cf_type = 1
-        K_I = 2.
-        K_T = 3.
-        k1 = 3.
-        k2 = 1.25
-        self.tracer.set_parameters(cf_type,K_I,K_T,k1,k2)
+        self.use_custom = True
+        if self.use_custom:
+            self.tracer = TracerCustom(self.device)
+            cf_type = 2
+            K_I = 2.
+            K_T = 3.
+            k1 = 3.
+            k2 = 1.25
+            self.tracer.set_parameters(cf_type,K_I,K_T,k1,k2)
+        else:
+            self.tracer = GaussiansTracer(self.device)
 
         self.checkpoint = checkpoint
 
@@ -136,16 +139,18 @@ class GSRTMethod(Method):
         time_ms = 0
         nit = 1
         for i in range(nit):
-            #res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
-            #                             ray_directions.float().squeeze(0).contiguous(),
-            #                             res_x, res_y,
-            #                             False)
-            draw_kd = False
-            tracer_type = 5
-            res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
-                                         ray_directions.float().squeeze(0).contiguous(),
-                                         res_x,res_y,
-                                         tracer_type,draw_kd,False,torch.tensor(0.))
+            if not self.use_custom:
+                res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
+                                             ray_directions.float().squeeze(0).contiguous(),
+                                             res_x, res_y,
+                                             False)
+            else:
+                draw_kd = False
+                tracer_type = 5
+                res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
+                                            ray_directions.float().squeeze(0).contiguous(),
+                                            res_x,res_y,
+                                            tracer_type,draw_kd,False,torch.tensor(0.))
             time_ms += res["time_ms"]
             #print(i,time_ms)
             #print(res["num_its"])

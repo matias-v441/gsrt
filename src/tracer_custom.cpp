@@ -58,6 +58,7 @@ void GaussiansKDTree::build(){
         max_leaf_size = max(leaf.part_ids.size(),max_leaf_size);
     }
     std::cout << "max leaf size: " << max_leaf_size << std::endl;
+    std::cout << "max_depth: " << max_depth << std::endl;
 
     cuda_traversal = std::make_unique<CUDA_Traversal>(*this);
 }
@@ -68,6 +69,8 @@ void GaussiansKDTree::build_rec(AABB V,
                                 int depth){
     
     int axis = depth%3; // round-robin
+
+    max_depth = max(max_depth, depth);
 
     int node_id = nodes.size();
     nodes.emplace_back();
@@ -381,6 +384,23 @@ void GaussiansKDTree::rcast_linear(const TracingParams &tracing_params){
     }
 }
 
+bool __intersectAABB(const float3 min, const float3 max,
+                    const float3 orig, const float3 dir,
+                    float& tmin, float& tmax, char& closest_plane_mask){
+    float3 idir = 1.f/dir;
+    float3 tc1 = (min-orig)*idir;
+    float3 tc2 = (max-orig)*idir;
+    float3 tc_min = fminf(tc1,tc2);
+    float3 tc_max = fmaxf(tc1,tc2);
+    tmin = fmax(tc_min.x,fmax(tc_min.y,tc_min.z));
+	int ax = 0;
+	if(tmin == tc_min.y) ax = 1;
+	if(tmin == tc_min.z) ax = 2;
+	closest_plane_mask = 1 << (ax*2 + (vec_c(dir,ax) > 0));
+    tmax = fmin(tc_max.x,fmin(tc_max.y,tc_max.z));
+    return tmin < tmax;
+}
+
 void GaussiansKDTree::rcast_kd(const TracingParams &tracing_params){
     std::cout << "tracing..." << std::endl; 
     //rcast_draw_kd(tracing_params);
@@ -401,6 +421,10 @@ void GaussiansKDTree::rcast_kd(const TracingParams &tracing_params){
         };
         std::vector<stack_node> stack;
         stack.push_back({0,sceneMin,sceneMax});
+
+        bool first_leaf = false;
+        char leaf_plane_mask = 0;
+
         while(!stack.empty()){
             stack_node snode = stack.back();
             Node node = nodes[snode.i];
@@ -415,16 +439,16 @@ void GaussiansKDTree::rcast_kd(const TracingParams &tracing_params){
                 float tsplit = (node.cplane()-vec_c(orig,ax))/vec_c(dir,ax);
                 int ifirst = snode.i+1;
                 int isecond = node.has_right()? node.right_id(): -1;
-                float3 orig_ = orig + dir*snode.tmin*.5f;
-                //if(vec_c(orig_,ax)>node.cplane()) std::swap(ifirst,isecond);
-                if(vec_c(dir,ax)<0) std::swap(ifirst,isecond);
+                //float3 orig_ = orig + dir*snode.tmin*.5f;
+                if(vec_c(orig,ax)>node.cplane()) std::swap(ifirst,isecond);
+                //if(vec_c(dir,ax)<0) std::swap(ifirst,isecond);
 
-                if(tsplit >= snode.tmax)// || tsplit < 0)
-                {
-                    snode.i = ifirst;
-                }else if(tsplit <= snode.tmin){
-                    snode.i = isecond; 
-                }else
+                //if(tsplit >= snode.tmax)// || tsplit < 0)
+                //{
+                //    snode.i = ifirst;
+                //}else if(tsplit <= snode.tmin){
+                //    snode.i = isecond; 
+                //}else
                 {
                     //if(isecond != -1)
                         stack.push_back({isecond,tsplit,snode.tmax});
@@ -435,12 +459,30 @@ void GaussiansKDTree::rcast_kd(const TracingParams &tracing_params){
                 node = nodes[snode.i];
             }
             if(snode.i != -1 && node.isleaf()){
+
+
+                float leaf_tmin,leaf_tmax; char closest_plane_mask;
+                if(!__intersectAABB(node_aabbs[snode.i].min,node_aabbs[snode.i].max,orig,dir,leaf_tmin,leaf_tmax,closest_plane_mask)){
+                    //assert(false);
+                    //params.radiance[i] = float3{1.f,0.f,0.f};return;
+                }
+                if(!first_leaf){
+                    leaf_plane_mask = closest_plane_mask;
+                }
+                first_leaf = false;
+
+
                 if(node.is_leaf_empty()) continue;
                 // if(tracing_params.draw_kd)
                 //     draw_aabb(tracing_params,snode.i,i);
                 struct Hit{int id; float resp, tmax;};
                 std::vector<Hit> hits;
-                for(int part_id : leaves_data.at(node.data_id()).part_ids){
+                auto leave_data = leaves_data.at(node.data_id());
+                //for(int part_id : leaves_data.at(node.data_id()).part_ids){
+                for(int i = 0; i < leave_data.part_ids.size(); ++i){
+                    int part_id = leave_data.part_ids[i];
+                    if(leave_data.plane_masks[i] & leaf_plane_mask)
+                        continue;
                     float tmin,tmax;
                     if(intersectAABB(aabbs[part_id].min,aabbs[part_id].max,orig,dir,tmin,tmax) && tmin >= snode.tmin){
                         float resp,tmax;
@@ -467,6 +509,15 @@ void GaussiansKDTree::rcast_gpu(const TracingParams& params){
     std::cout << "rcast_gpu" << std::endl;
     if(cuda_traversal != nullptr){
         cuda_traversal->rcast_kd_restart(params);
+    }else{
+        std::cout << "not initialized" << std::endl;
+    }
+}
+
+void GaussiansKDTree::rcast_gpu_lin(const TracingParams& params){
+    std::cout << "rcast_gpu" << std::endl;
+    if(cuda_traversal != nullptr){
+        cuda_traversal-(params);
     }else{
         std::cout << "not initialized" << std::endl;
     }

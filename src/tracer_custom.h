@@ -142,6 +142,7 @@ public:
         node_aabbs = other.node_aabbs;
         cuda_traversal = std::move(other.cuda_traversal);
         params = other.params;
+        max_depth = other.max_depth;
     }
     GaussiansKDTree &operator=(GaussiansKDTree &&other) {
         using std::swap;
@@ -161,6 +162,7 @@ public:
         swap(first.node_aabbs, second.node_aabbs);
         swap(first.cuda_traversal, second.cuda_traversal);
         swap(first.params, second.params);
+        swap(first.max_depth, second.max_depth);
     }
     void rcast_linear(const TracingParams& params);
     void rcast_kd(const TracingParams& params);
@@ -168,9 +170,17 @@ public:
     void rcast_draw_kd(const TracingParams& params);
     void draw_aabb(const TracingParams& params, int node_id, int ray_id);
     void rcast_gpu(const TracingParams& params);
+    void rcast_gpu_lin(const TracingParams& params);
 
     const GaussiansData& get_scene()const {
         return data;
+    }
+
+    size_t get_size() const{
+        return nodes.size() * sizeof(Node)
+             + leaves_data.size()*sizeof(LeafData)
+             + aabbs.size()*sizeof(AABB)
+             + leaves_data.size()*sizeof(AABB);
     }
 
     static constexpr int MAX_LEAF_SIZE = 1024;
@@ -265,6 +275,8 @@ private:
 
     ASParams params;
 
+    int max_depth = 0;
+
     //enum class EventType:bool{START,END};
     //struct Event{
     //    EventType type;
@@ -302,6 +314,10 @@ public:
         scene_as = std::move(GaussiansKDTree(data,params));
     }
 
+    const int get_size() const{
+        return scene_as.get_size();
+    }
+
     void trace_rays(const TracingParams &tracing_params){
         if(tracing_params.tracer_type == 1)
             scene_as.rcast_kd_restart(tracing_params);
@@ -313,7 +329,9 @@ public:
             scene_as.rcast_draw_kd(tracing_params);
         if(tracing_params.tracer_type == 5)
             scene_as.rcast_gpu(tracing_params);
-        }
+        if(tracing_params.tracer_type == 6)
+            scene_as.(tracing_params);
+    }
 private:
     kdtree_impl::GaussiansKDTree scene_as;
 };

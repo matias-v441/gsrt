@@ -37,17 +37,20 @@ device = torch.device("cuda:0")
 # part_color = torch.ones(part_num,3).contiguous()*torch.tensor([0.,1.,0.])
 # active_sh_deg = 3
 
+setups = [("garden",'DSC08100'),("flowers",'_DSC9040'),("counter","DSCF5857"),("stump","_DSC9309"),
+          ("drums","test/r_1"),("lego","test/r_1")]
+scene,cam_path = setups[3]
 
-gaussians,it = torch.load("data/lego/checkpoint/chkpnt-30000.pth")
+gaussians,it = torch.load(f"data/{scene}/checkpoint/chkpnt-30000.pth")
 part_xyz = gaussians[1].detach().cpu()
 part_scale = torch.exp(gaussians[4].detach().cpu())*1.5
-#part_scale = torch.ones((1,3)).repeat((part_xyz.shape[0],1))*.01
 part_rot = gaussians[5].detach().cpu()
 part_opac = torch.sigmoid(gaussians[6].detach().cpu())
 part_features_dc = gaussians[2].detach().cpu()
 part_features_rest = gaussians[3].detach().cpu()
 active_sh_deg = gaussians[0]
 part_sh = torch.cat((part_features_dc,part_features_rest),dim=1).contiguous()
+print(part_xyz.shape)
 
 # mask = part_xyz[:,2]>0.95
 # mask *= part_xyz[:,0]<-0.3
@@ -77,11 +80,11 @@ else:
     tracer = GaussiansTracer(device)
 
 
-tracer.load_gaussians(part_xyz,part_rot,part_scale,
+build=tracer.load_gaussians(part_xyz,part_rot,part_scale,
                       part_opac,part_sh,
                       active_sh_deg
                       )
-#%%
+
 
 # fx,fy,cx,cy = (1000.,1000.,-500.,-500.)
 # K = torch.tensor([[fx,0.,cx],[0.,fy,cy],[0.,0.,1.]])
@@ -98,18 +101,34 @@ tracer.load_gaussians(part_xyz,part_rot,part_scale,
 # ray_directions /= ray_directions.norm(dim=1)[:,None]
 # ray_directions = ray_directions.to(device,dtype=torch.float32).contiguous()
 
-fx,fy,cx,cy = (1000.,1000.,500.,500.)
+cam = np.load(f"data/{scene}/predictions/cameras/{cam_path}.npz")
+#cam = np.load(f"data/{scene}/predictions/cameras/DSC08100.npz")
+print(cam.files)
+print(cam["poses"])
+print(cam["intrinsics"])
+print(cam['image_sizes'])
+P = cam['poses']
+
+#fx,fy,cx,cy = (1000.,1000.,500.,500.)
+fx,fy,cx,cy = cam['intrinsics']
 K = torch.tensor([[fx,0.,cx],[0.,fy,cy],[0.,0.,1.]])
-R = torch.eye(3)
+#R = torch.eye(3)
 ay = np.radians(0)
-R = torch.tensor([[np.cos(ay),0.,np.sin(ay)],
-                 [0., 1., 0.],
-                 [-np.sin(ay), 0., np.cos(ay)]]).float()
-C = R@torch.tensor([.0,.0,5.])
+
+#R = torch.tensor([[np.cos(ay),0.,np.sin(ay)],
+#                 [0., 1., 0.],
+#                 [-np.sin(ay), 0., np.cos(ay)]]).float()
+#C = R@torch.tensor([.0,.0,5.])
 #C = R@torch.tensor([-.2,-.5,1.5])
 #C = R@torch.tensor([0.,0.,150.])
+
+R = torch.from_numpy(P[:,:3]).T
+t = torch.from_numpy(P[:,3])
+C = t
+
 c2w = torch.inverse(K@R)
-res_x,res_y = 1000,1000
+res_x,res_y = cam['image_sizes']
+#res_x,res_y = 1000,1000
 #res_x,res_y = 100,1
 #res_x,res_y = 1,1
 num_rays = res_x*res_y
@@ -118,7 +137,7 @@ x,y=torch.meshgrid(torch.linspace(0.,res_x,res_x),torch.linspace(0.,res_y,res_y)
 #x,y=torch.tensor([[res_x*.5]]),torch.tensor([[res_y*.5]])
 #x,y = torch.linspace(0.,res_x,res_x),torch.tensor([[500.]]).repeat(res_x,1)
 c_rays = torch.stack([x.flatten(),y.flatten(),torch.ones(num_rays)],dim=1)
-ray_directions = -c_rays @ c2w.T
+ray_directions = c_rays @ c2w.T
 ray_directions /= ray_directions.norm(dim=1)[:,None]
 ray_directions = ray_directions.float().contiguous()
 #print(ray_origins,ray_directions)
@@ -131,13 +150,27 @@ if use_custom:
 else:
     out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,False,torch.tensor(0.))
 
-radiance = out["radiance"].cpu().reshape(res_x,res_y,3)
-transmittance = out["transmittance"].cpu().reshape(res_x,res_y)
+radiance = out["radiance"].cpu().reshape(res_x,res_y,3).permute(1,0,2)
+transmittance = out["transmittance"].cpu().reshape(res_y,res_x)
 
-print("num_its", out["num_its"])
-print("time_ms", out["time_ms"])
+T_B = build['time_ms']/1000
+T_R = out['time_ms']/(res_x*res_y)
+N_IT = out['num_its']/(res_x*res_y)
+N_TR = out['num_its_trav']/(res_x*res_y)
+N_Q = (res_x,res_y)
+M = build['size']/1e6 #megabytes
+PERF = (res_x*res_y)/out['time_ms'] #kilorays/s
+print("---------- PROF ---------")
+print("T_B T_R N_IT N_TR N_Q M PERF")
+print(f"{T_B:.3f} & {T_R} & {N_IT:.3f} & {N_TR:.3f} & {N_Q[0]}x{N_Q[1]} & {M:.3f} & {PERF:.3f} ")
 
 import matplotlib.pyplot as plt
 plt.figure()
+radiance = torch.clamp(radiance,0,1)
 plt.imshow(radiance)
+plt.axis('off')
 plt.show()
+
+from PIL import Image
+img=Image.fromarray((radiance.numpy()*255).astype(np.uint8))
+img.save(f"{scene}.png")
