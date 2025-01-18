@@ -63,7 +63,7 @@ class _TracerFunction_Check(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx,part_opac,part_xyz,part_scale,part_rot,part_sh,part_color):
-        tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,-1,part_color)
+        tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,3,part_color)
         out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,False,torch.tensor(0))
         return out["radiance"]
 
@@ -92,7 +92,7 @@ part_rot.requires_grad = True
 
 part_scale.requires_grad = True
 part_opac.requires_grad = True
-part_sh.requires_grad = False
+part_sh.requires_grad = True
 part_color.requires_grad = True
 check = torch.autograd.gradcheck(trace_function_check,
                                  (part_opac,part_xyz,part_scale,part_rot,part_sh,part_color),
@@ -101,52 +101,6 @@ check = torch.autograd.gradcheck(trace_function_check,
                                  eps=1e-1
                                  )
 print(check)
-#%%
-part_xyz.requires_grad = True
-part_rot.requires_grad = True
-part_scale.requires_grad = True
-part_opac.requires_grad = True
-part_sh.requires_grad = True
-part_color.requires_grad = True
-best_model = None
-best_loss = torch.inf
-for it in range(1000):
-    part_opac_ = torch.sigmoid(part_opac)
-    part_scale_ = torch.exp(part_scale)
-    L = trace_function_check(part_opac_,part_xyz,part_scale_,part_rot,part_sh,part_color)
-    print(L)
-    L.backward()
-    #print(part_opac.grad)
-    part_opac.requires_grad = False
-    part_xyz.requires_grad = False
-    part_scale.requires_grad = False
-    part_rot.requires_grad = False
-    part_sh.requires_grad = False
-    part_color.requires_grad = False
-    lr = 0.001
-    part_opac -= lr*part_opac.grad
-    part_xyz -= lr*part_xyz.grad
-    part_scale -= lr*part_scale.grad
-    part_rot -= lr*part_rot.grad
-    part_sh -= lr*part_sh.grad
-    part_color -= lr*part_color.grad
-    part_opac.requires_grad = True
-    part_xyz.requires_grad = True
-    part_scale.requires_grad = True
-    part_rot.requires_grad = True
-    part_sh.requires_grad = True
-    part_color.requires_grad = True
-    if L < best_loss:
-        best_loss = L.detach()
-        best_model = (x.detach().clone() for x in (part_opac,part_xyz,part_rot,part_scale,part_sh,part_color))
-    #if it%100 == 0:
-    #    out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,False,torch.tensor(0.))
-    #    radiance = out["radiance"].cpu().reshape(res_x,res_y,3)
-    #    plt.figure()
-    #    plt.imshow(radiance)
-
-print("MSE ", best_loss)
-part_opac,part_xyz,part_rot,part_scale,part_sh,part_color = best_model
 
 #%%
 #part_xyz.requires_grad = True
@@ -238,7 +192,21 @@ optim = torch.optim.AdamW(params,lr=lr, weight_decay=1e-4, eps=1e-2)
 
 xyz_grad_abs_acc = torch.zeros(params[1].shape[0])
 
-densify = False
+densify = True
+
+import wandb
+
+# wandb.init(
+#     project="gsrt",
+# 
+#     config={
+#     "learning_rate": lr,
+#     "architecture": "GSRT",
+#     "dataset": "dumb rectangle",
+#     "epochs": 1,
+#     }
+# )
+
 
 for it in range(10000):
     
@@ -247,8 +215,11 @@ for it in range(10000):
     L = trace_function_check(part_opac_,params[1],part_scale_,params[3],params[4],params[5])
     if L < best_loss:
         best_loss = L.detach()
-        best_model = (x.detach().clone() for x in params)
-    print(L)
+        best_model = [x.detach().clone() for x in params]
+
+    print(L.detach().cpu().item())
+    #wandb.log({"loss":L.detach()})
+
     optim.zero_grad()
     L.backward()
     optim.step()
@@ -290,9 +261,11 @@ part_opac,part_xyz,part_scale,part_rot,part_sh,part_color = best_model
 dL_dC = torch.ones(res_x*res_y,3).float().contiguous().to(device)
 dL_dC /= dL_dC.numel()
 
+part_color = torch.zeros_like(part_color)
+
 tracer.load_gaussians(part_xyz,part_rot,torch.exp(part_scale),
                       torch.sigmoid(part_opac),part_sh,
-                      -1, part_color
+                      3, part_color
                       )
 out = tracer.trace_rays(ray_origins,ray_directions,res_x,res_y,True,dL_dC)
 dL_dC = torch.ones(res_x*res_y,3).float().contiguous().to(device)
@@ -307,6 +280,8 @@ print("num_its", out["num_its"])
 print("num_its_bwd", out["num_its_bwd"])
 
 plt.figure()
+plt.title(f"MSE={best_loss}")
+plt.axis('off')
 plt.imshow(radiance)
 
 grad_opacity = out["grad_opacity"].cpu()

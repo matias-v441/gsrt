@@ -144,3 +144,9 @@ data/
 
 *retarded*
 *.jpg
+
+wandb/
+run_log*
+*.zip
+*checkpoint*
+nb-info.json

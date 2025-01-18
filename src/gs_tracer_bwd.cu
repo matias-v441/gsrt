@@ -78,9 +78,9 @@ __device__ void compute_radiance(unsigned int gs_id, const float3 &ray_origin,
 	result += make_float3(.5f);
 
     //printf("RAD_res %f %f %f\n", result.x,result.y,result.z);
-	clamped[3 * gs_id + 0] = (result.x < 0);
-	clamped[3 * gs_id + 1] = (result.y < 0);
-	clamped[3 * gs_id + 2] = (result.z < 0);
+	clamped[0] = (result.x < 0);
+	clamped[1] = (result.y < 0);
+	clamped[2] = (result.z < 0);
 
 	rad = {max(result.x,0.f),max(result.y,0.f),max(result.z,0.f)};
     //printf("RAD %f %f %f\n", rad.x,rad.y,rad.z);
@@ -103,7 +103,8 @@ __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin,
     const float3& dL_dcolor, float3& grad_xyz, const bool* clamped)
 {
     atomicAdd_float3(params.grad_color[gs_id], dL_dcolor);
-    return;
+    grad_xyz = make_float3(0.f);
+    if(params.sh_deg == -1) return;
 
 	// same as forward -----
 
@@ -118,9 +119,9 @@ __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin,
 	// Use PyTorch rule for clamping: if clamping was applied,
 	// gradient becomes 0.
 	float3 dL_dRGB = dL_dcolor;
-	dL_dRGB.x *= clamped[3 * gs_id + 0] ? 0.f : 1.f;
-	dL_dRGB.y *= clamped[3 * gs_id + 1] ? 0.f : 1.f;
-	dL_dRGB.z *= clamped[3 * gs_id + 2] ? 0.f : 1.f;
+	dL_dRGB.x *= clamped[0] ? 0.f : 1.f;
+	dL_dRGB.y *= clamped[1] ? 0.f : 1.f;
+	dL_dRGB.z *= clamped[2] ? 0.f : 1.f;
 
 	float3 dRGBdx{0.f, 0.f, 0.f};
 	float3 dRGBdy{0.f, 0.f, 0.f};
@@ -134,7 +135,10 @@ __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin,
 
 	// No tricks here, just high school-level calculus.
 	float dRGBdsh0 = SH_C0;
-	dL_dsh[0] = dRGBdsh0 * dL_dRGB;
+
+	//dL_dsh[0] = dRGBdsh0 * dL_dRGB;
+    atomicAdd_float3(dL_dsh[0], dRGBdsh0 * dL_dRGB);
+
 	if (deg > 0)
 	{
 		float dRGBdsh1 = -SH_C1 * y;
@@ -147,6 +151,7 @@ __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin,
 		//dL_dsh[1] = dRGBdsh1 * dL_dRGB;
 		//dL_dsh[2] = dRGBdsh2 * dL_dRGB;
 		//dL_dsh[3] = dRGBdsh3 * dL_dRGB;
+
         atomicAdd_float3(dL_dsh[1], dRGBdsh1 * dL_dRGB);
 		atomicAdd_float3(dL_dsh[2], dRGBdsh2 * dL_dRGB);
 		atomicAdd_float3(dL_dsh[3], dRGBdsh3 * dL_dRGB);
@@ -170,6 +175,7 @@ __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin,
 			//dL_dsh[6] = dRGBdsh6 * dL_dRGB;
 			//dL_dsh[7] = dRGBdsh7 * dL_dRGB;
 			//dL_dsh[8] = dRGBdsh8 * dL_dRGB;
+
             atomicAdd_float3(dL_dsh[4], dRGBdsh4 * dL_dRGB);
 			atomicAdd_float3(dL_dsh[5], dRGBdsh5 * dL_dRGB);
 			atomicAdd_float3(dL_dsh[6], dRGBdsh6 * dL_dRGB);
@@ -196,6 +202,7 @@ __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin,
 				//dL_dsh[13] = dRGBdsh13 * dL_dRGB;
 				//dL_dsh[14] = dRGBdsh14 * dL_dRGB;
 				//dL_dsh[15] = dRGBdsh15 * dL_dRGB;
+
                 atomicAdd_float3(dL_dsh[9], dRGBdsh9 * dL_dRGB);
 				atomicAdd_float3(dL_dsh[10], dRGBdsh10 * dL_dRGB);
 				atomicAdd_float3(dL_dsh[11], dRGBdsh11 * dL_dRGB);
@@ -413,7 +420,7 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
     // SH
     float3 sh_grad_xyz;
     compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
-    //grad_pos += sh_grad_xyz;
+    grad_pos += sh_grad_xyz;
 
     atomicAdd_float3(params.grad_xyz[chit_id],grad_pos);
 
@@ -601,7 +608,7 @@ extern "C" __global__ void __raygen__rg() {
     acc.transmittance = 1.f;
     unsigned int* uip_acc = reinterpret_cast<unsigned int *>(&acc);
 
-    constexpr float max_dist = 100.f; 
+    constexpr float max_dist = 1e16f; 
     float min_dist = 0.f;
     unsigned int hits_capacity = chunk_size;
     while(hits_capacity <= hits_max_capacity){

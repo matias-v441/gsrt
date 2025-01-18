@@ -482,9 +482,9 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
 
         params.dL_dC = tracing_params.dL_dC;
 
-        auto& sbs = gaussians_structure->device_scene_buffers();
-        params.rad_clamped = sbs.rad_clamped;
-        params.rad_sh = sbs.rad_sh;
+        //auto& sbs = gaussians_structure->device_scene_buffers();
+        //params.rad_clamped = sbs.rad_clamped;
+        //params.rad_sh = sbs.rad_sh;
 
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),

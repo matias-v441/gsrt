@@ -26,6 +26,8 @@ gaussians,it = torch.load("data/lego/checkpoint/chkpnt-30000.pth")
 #part_color = torch.ones(part_opac.shape[0],3).contiguous()*torch.tensor([0.,1.,0.])
 
 gs_xyz = gaussians[1].detach().cpu()
+print(torch.max(gs_xyz,dim=0),torch.min(gs_xyz,dim=0))
+#%%
 gs_scaling = torch.exp(gaussians[4].detach().cpu())
 #gs_scaling = torch.ones((1,3)).repeat((gs_xyz.shape[0],1))*.01
 gs_rotation = gaussians[5].detach().cpu()

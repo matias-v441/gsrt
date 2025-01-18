@@ -93,6 +93,7 @@ class GaussiansAS {
         swap(first.d_vertices, second.d_vertices);
         swap(first.d_triangles, second.d_triangles);
         swap(first.d_gaussians, second.d_gaussians);
+        //swap(first.d_scene_buffers, second.d_scene_buffers);
     }
 
     OptixTraversableHandle gas_handle() const {
@@ -158,7 +159,6 @@ class TraceRaysPipeline {
         swap(first.raygen_prog_group, second.raygen_prog_group);
         swap(first.miss_prog_group, second.miss_prog_group);
         swap(first.hitgroup_prog_group, second.hitgroup_prog_group);
-        swap(first.eps, second.eps);
     }
 
     void trace_rays(const GaussiansAS *gaussians_structure,
@@ -181,7 +181,6 @@ class TraceRaysPipeline {
     OptixProgramGroup miss_prog_group = nullptr;
     OptixProgramGroup hitgroup_prog_group = nullptr;
     OptixProgramGroup bwd_hitgroup_prog_group = nullptr;
-    float eps = 1e-6;
 
     static std::string load_ptx_data() {
         return std::string((char *)ptx_code_file);
