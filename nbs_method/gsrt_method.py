@@ -1,76 +1,231 @@
 from typing import Any, Dict
-from nerfbaselines import Method
-from nerfbaselines import Dataset, ModelInfo
-from nerfbaselines import Cameras, CameraModel
-from nerfbaselines import cameras
+
 import torch
 from torch import nn
 import numpy as np
 
+import dataclasses
+import warnings
+import random
+import itertools
+import shlex
+import logging
+import copy
+from typing import Optional
+import os
+import tempfile
+import numpy as np
+from PIL import Image
+
+from nerfbaselines import (
+    cameras,Method, MethodInfo, ModelInfo, RenderOutput, Cameras, camera_model_to_int, Dataset
+)
+import shlex
+
+from argparse import ArgumentParser
+
+from random import randint
+
+from utils.general_utils import PILtoTorch  # type: ignore
+from arguments import ModelParams, PipelineParams, OptimizationParams #  type: ignore
+from scene import GaussianModel # type: ignore
+import scene.dataset_readers  # type: ignore
+from scene.dataset_readers import SceneInfo, getNerfppNorm, focal2fov  # type: ignore
+from scene.dataset_readers import CameraInfo as _old_CameraInfo  # type: ignore
+from scene.dataset_readers import storePly, fetchPly  # type: ignore
+from utils.general_utils import safe_state, build_rotation, get_expon_lr_func, inverse_sigmoid  # type: ignore
+from utils.graphics_utils import fov2focal  # type: ignore
+from utils.loss_utils import l1_loss, ssim  # type: ignore
+from utils.sh_utils import SH2RGB  # type: ignore
+from scene import Scene, sceneLoadTypeCallbacks  # type: ignore
+from utils import camera_utils  # type: ignore
+
 from extension import GaussiansTracer
 
-def build_rotation(r):
-    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
-
-    q = r / norm[:, None]
-
-    R = torch.zeros((q.size(0), 3, 3), device='cuda')
-
-    r = q[:, 0]
-    x = q[:, 1]
-    y = q[:, 2]
-    z = q[:, 3]
-
-    R[:, 0, 0] = 1 - 2 * (y*y + z*z)
-    R[:, 0, 1] = 2 * (x*y - r*z)
-    R[:, 0, 2] = 2 * (x*z + r*y)
-    R[:, 1, 0] = 2 * (x*y + r*z)
-    R[:, 1, 1] = 1 - 2 * (x*x + z*z)
-    R[:, 1, 2] = 2 * (y*z - r*x)
-    R[:, 2, 0] = 2 * (x*z - r*y)
-    R[:, 2, 1] = 2 * (y*z + r*x)
-    R[:, 2, 2] = 1 - 2 * (x*x + y*y)
-    return R
-
-
-def get_expon_lr_func(
-    lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
-):
-    """
-    Copied from Plenoxels
-
-    Continuous learning rate decay function. Adapted from JaxNeRF
-    The returned rate is lr_init when step=0 and lr_final when step=max_steps, and
-    is log-linearly interpolated elsewhere (equivalent to exponential decay).
-    If lr_delay_steps>0 then the learning rate will be scaled by some smooth
-    function of lr_delay_mult, such that the initial learning rate is
-    lr_init*lr_delay_mult at the beginning of optimization but will be eased back
-    to the normal learning rate when steps>lr_delay_steps.
-    :param conf: config subtree 'lr' or similar
-    :param max_steps: int, the number of steps during optimization.
-    :return HoF which takes step as input
-    """
-
-    def helper(step):
-        if step < 0 or (lr_init == 0.0 and lr_final == 0.0):
-            # Disable this parameter
-            return 0.0
-        if lr_delay_steps > 0:
-            # A kind of reverse cosine decay.
-            delay_rate = lr_delay_mult + (1 - lr_delay_mult) * np.sin(
-                0.5 * np.pi * np.clip(step / lr_delay_steps, 0, 1)
-            )
+def flatten_hparams(hparams, *, separator: str = "/", _prefix: str = ""):
+    flat = {}
+    if dataclasses.is_dataclass(hparams):
+        hparams = {f.name: getattr(hparams, f.name) for f in dataclasses.fields(hparams)}
+    for k, v in hparams.items():
+        if _prefix:
+            k = f"{_prefix}{separator}{k}"
+        if isinstance(v, dict) or dataclasses.is_dataclass(v):
+            flat.update(flatten_hparams(v, _prefix=k, separator=separator).items())
         else:
-            delay_rate = 1.0
-        t = np.clip(step / max_steps, 0, 1)
-        log_lerp = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
-        return delay_rate * log_lerp
-
-    return helper
+            flat[k] = v
+    return flat
 
 
-def inverse_sigmoid(x):
-    return torch.log(x/(1-x))
+def getProjectionMatrixFromOpenCV(w, h, fx, fy, cx, cy, znear, zfar):
+    z_sign = 1.0
+    P = torch.zeros((4, 4))
+    P[0, 0] = 2.0 * fx / w
+    P[1, 1] = 2.0 * fy / h
+    P[0, 2] = (2.0 * cx - w) / w
+    P[1, 2] = (2.0 * cy - h) / h
+    P[3, 2] = z_sign
+    P[2, 2] = z_sign * zfar / (zfar - znear)
+    P[2, 3] = -(zfar * znear) / (zfar - znear)
+    return P
+
+#
+# Patch Gaussian Splatting to include sampling masks
+# Also, fix cx, cy (ignored in gaussian-splatting)
+#
+# Patch loadCam to include sampling mask
+_old_loadCam = camera_utils.loadCam
+def loadCam(args, id, cam_info, resolution_scale):
+    camera = _old_loadCam(args, id, cam_info, resolution_scale)
+
+    sampling_mask = None
+    if cam_info.sampling_mask is not None:
+        sampling_mask = PILtoTorch(cam_info.sampling_mask, (camera.image_width, camera.image_height))
+    setattr(camera, "sampling_mask", sampling_mask)
+    setattr(camera, "_patched", True)
+
+    # Fix cx, cy (ignored in gaussian-splatting)
+    camera.focal_x = fov2focal(cam_info.FovX, camera.image_width)
+    camera.focal_y = fov2focal(cam_info.FovY, camera.image_height)
+    camera.cx = cam_info.cx
+    camera.cy = cam_info.cy
+    camera.projection_matrix = getProjectionMatrixFromOpenCV(
+        camera.image_width, 
+        camera.image_height, 
+        camera.focal_x, 
+        camera.focal_y, 
+        camera.cx, 
+        camera.cy, 
+        camera.znear, 
+        camera.zfar).transpose(0, 1).cuda()
+    camera.full_proj_transform = (camera.world_view_transform.unsqueeze(0).bmm(camera.projection_matrix.unsqueeze(0))).squeeze(0)
+
+    return camera
+camera_utils.loadCam = loadCam
+
+
+# Patch CameraInfo to add sampling mask
+class CameraInfo(_old_CameraInfo):
+    def __new__(cls, *args, sampling_mask=None, cx, cy, **kwargs):
+        self = super(CameraInfo, cls).__new__(cls, *args, **kwargs)
+        self.sampling_mask = sampling_mask
+        self.cx = cx
+        self.cy = cy
+        return self
+scene.dataset_readers.CameraInfo = CameraInfo
+
+
+def _load_caminfo(idx, pose, intrinsics, image_name, image_size, image=None, image_path=None, sampling_mask=None, scale_coords=None):
+    pose = np.copy(pose)
+    pose = np.concatenate([pose, np.array([[0, 0, 0, 1]], dtype=pose.dtype)], axis=0)
+    pose = np.linalg.inv(pose)
+    R = pose[:3, :3]
+    T = pose[:3, 3]
+    if scale_coords is not None:
+        T = T * scale_coords
+    R = np.transpose(R)
+
+    width, height = image_size
+    fx, fy, cx, cy = intrinsics
+    if image is None:
+        image = Image.fromarray(np.zeros((height, width, 3), dtype=np.uint8))
+    return CameraInfo(
+        uid=idx, R=R, T=T, 
+        FovX=focal2fov(float(fx), float(width)),
+        FovY=focal2fov(float(fy), float(height)),
+        image=image, image_path=image_path, image_name=image_name, 
+        width=int(width), height=int(height),
+        sampling_mask=sampling_mask,
+        cx=cx, cy=cy)
+
+
+def _config_overrides_to_args_list(args_list, config_overrides):
+    for k, v in config_overrides.items():
+        if str(v).lower() == "true":
+            v = True
+        if str(v).lower() == "false":
+            v = False
+        if isinstance(v, bool):
+            if v:
+                if f'--no-{k}' in args_list:
+                    args_list.remove(f'--no-{k}')
+                if f'--{k}' not in args_list:
+                    args_list.append(f'--{k}')
+            else:
+                if f'--{k}' in args_list:
+                    args_list.remove(f'--{k}')
+                else:
+                    args_list.append(f"--no-{k}")
+        elif f'--{k}' in args_list:
+            args_list[args_list.index(f'--{k}') + 1] = str(v)
+        else:
+            args_list.append(f"--{k}")
+            args_list.append(str(v))
+
+
+def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: str, white_background: bool = False, scale_coords=None):
+    if dataset is None:
+        return SceneInfo(None, [], [], nerf_normalization=dict(radius=None, translate=None), ply_path=None)
+    assert np.all(dataset["cameras"].camera_models == camera_model_to_int("pinhole")), "Only pinhole cameras supported"
+
+    cam_infos = []
+    for idx, extr in enumerate(dataset["cameras"].poses):
+        del extr
+        intrinsics = dataset["cameras"].intrinsics[idx]
+        pose = dataset["cameras"].poses[idx]
+        image_path = dataset["image_paths"][idx] if dataset["image_paths"] is not None else f"{idx:06d}.png"
+        image_name = (
+            os.path.relpath(str(dataset["image_paths"][idx]), str(dataset["image_paths_root"])) if dataset["image_paths"] is not None and dataset["image_paths_root"] is not None else os.path.basename(image_path)
+        )
+
+        w, h = dataset["cameras"].image_sizes[idx]
+        im_data = dataset["images"][idx][:h, :w]
+        assert im_data.dtype == np.uint8, "Gaussian Splatting supports images as uint8"
+        if white_background and im_data.shape[-1] == 4:
+            bg = np.array([1, 1, 1])
+            norm_data = im_data / 255.0
+            arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + (1 - norm_data[:, :, 3:4]) * bg
+            im_data = np.array(arr * 255.0, dtype=np.uint8)
+        if not white_background and dataset["metadata"].get("id") == "blender":
+            warnings.warn("Blender scenes are expected to have white background. If the background is not white, please set white_background=True in the dataset loader.")
+        elif white_background and dataset["metadata"].get("id") != "blender":
+            warnings.warn("white_background=True is set, but the dataset is not a blender scene. The background may not be white.")
+        image = Image.fromarray(im_data)
+        sampling_mask = None
+        if dataset["sampling_masks"] is not None:
+            sampling_mask = Image.fromarray((dataset["sampling_masks"][idx] * 255).astype(np.uint8))
+
+        cam_info = _load_caminfo(
+            idx, pose, intrinsics, 
+            image_name=image_name, 
+            image_path=image_path,
+            image_size=(w, h),
+            image=image,
+            sampling_mask=sampling_mask,
+            scale_coords=scale_coords,
+        )
+        cam_infos.append(cam_info)
+
+    cam_infos = sorted(cam_infos.copy(), key=lambda x: x.image_name)
+    nerf_normalization = getNerfppNorm(cam_infos)
+
+    points3D_xyz = dataset["points3D_xyz"]
+    if scale_coords is not None:
+        points3D_xyz = points3D_xyz * scale_coords
+    points3D_rgb = dataset["points3D_rgb"]
+    if points3D_xyz is None and dataset["metadata"].get("id", None) == "blender":
+        # https://github.com/graphdeco-inria/gaussian-splatting/blob/2eee0e26d2d5fd00ec462df47752223952f6bf4e/scene/dataset_readers.py#L221C4-L221C4
+        num_pts = 100_000
+        logging.info(f"generating random point cloud ({num_pts})...")
+
+        # We create random points inside the bounds of the synthetic Blender scenes
+        points3D_xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
+        shs = np.random.random((num_pts, 3)) / 255.0
+        points3D_rgb = (SH2RGB(shs) * 255).astype(np.uint8)
+
+    storePly(os.path.join(tempdir, "scene.ply"), points3D_xyz, points3D_rgb)
+    pcd = fetchPly(os.path.join(tempdir, "scene.ply"))
+    scene_info = SceneInfo(point_cloud=pcd, train_cameras=cam_infos, test_cameras=[], nerf_normalization=nerf_normalization, ply_path=os.path.join(tempdir, "scene.ply"))
+    return scene_info
 
 
 class _TraceFunction(torch.autograd.Function):
@@ -111,10 +266,9 @@ class _TraceFunction(torch.autograd.Function):
         return None,grad_opacity,grad_xyz,grad_scale,grad_rot,grad_sh,grad_color
 
         
-def trace_function(setup,*args):
-    out = _TraceFunction.apply(setup,*args)
-    L = torch.mean(torch.sum((out-setup['target_img'])**2,dim=1))
-    return L,out
+def trace_function(*args):
+    out = _TraceFunction.apply(*args)
+    return out
 
 
 class GSRTMethod(Method):
@@ -134,9 +288,15 @@ class GSRTMethod(Method):
 
         self.checkpoint = checkpoint
 
-        self.scene_extent = self.train_dataset['metadata']['expected_scene_scale']
-
-        self.initialize_for_blender()
+        self.scene_extent = None
+        if self.train_dataset is not None:
+            self.scene_extent = self.train_dataset['metadata']['expected_scene_scale']
+        self._3dgs_data = False
+        if self.checkpoint is None:
+            self.initialize_for_blender()
+        else:
+            self._3dgs_data = True
+            self.load_3dgs_checkpoint()
 
         self.tracer = GaussiansTracer(torch.device("cuda:0"))
 
@@ -159,12 +319,60 @@ class GSRTMethod(Method):
         self._xyz = ((torch.rand(n,3)-.5)*(scene_max-scene_min)*.5+(scene_max+scene_min)*.5).cuda()
         self._scaling = torch.log(torch.ones(1,3).repeat(n,1)*0.01).cuda()
         self._rotation = torch.hstack([torch.ones(n,1),torch.zeros(n,3)]).cuda()
-        #self._opacity = self.inverse_opacity_activation(torch.ones(n,1)*0.01).cuda()
-        self._opacity = self.inverse_opacity_activation(torch.ones(n,1)*0.4).cuda()
+        self._opacity = self.inverse_opacity_activation(torch.ones(n,1)*0.01).cuda()
         self._features_dc = torch.zeros(n,1,3).cuda()
         self._features_rest = torch.zeros(n,15,3).cuda()
-        self.active_sh_degree = 3
+        self.active_sh_degree = 0
+        self.max_sh_degree = 3
         self._color = (torch.ones(n,3)*torch.tensor([0.,1.,0.])).cuda() 
+
+        #self.scene = self._build_scene(self.train_dataset)
+
+    def load_checkpoint(self):
+        ch = torch.load(self.checkpoint)
+        self._xyz = ch['xyz']
+        self._scaling = ch['scaling']
+        self._rotation = ch['rotation']
+        self._opacity = ch['opacity']
+        self._features_dc = ch['f_dc']
+        self._features_rest = ch['f_rest']
+        self.active_sh_degree = ch['sh_deg']
+        self._color = ch['color']
+    
+
+    def load_3dgs_checkpoint(self):
+        gaussians,it = torch.load(self.checkpoint)
+        self._xyz = gaussians[1].detach().cuda()
+        self._scaling = gaussians[4].detach().cuda()
+        self._rotation = gaussians[5].detach().cuda()
+        self._opacity = gaussians[6].detach().cuda()
+        self._features_dc = gaussians[2].detach().cuda()
+        self._features_rest = gaussians[3].detach().cuda()
+        self.active_sh_degree = gaussians[0]
+        self._color = (torch.ones(self._xyz.shape[0],3)*torch.tensor([0.,1.,0.])).cuda() 
+
+    
+    def _build_scene(self, dataset):
+        opt = copy.copy(self.dataset)
+        with tempfile.TemporaryDirectory() as td:
+            os.mkdir(td + "/sparse")
+            opt.source_path = td  # To trigger colmap loader
+            opt.model_path = td if dataset is not None else str(self.checkpoint)
+            backup = sceneLoadTypeCallbacks["Colmap"]
+            try:
+                info = self.get_info()
+                def colmap_loader(*args, **kwargs):
+                    del args, kwargs
+                    return _convert_dataset_to_gaussian_splatting(dataset, td, white_background=self.dataset.white_background, scale_coords=self.dataset.scale_coords)
+                sceneLoadTypeCallbacks["Colmap"] = colmap_loader
+                loaded_step = info.get("loaded_step")
+                scene = Scene(opt, self.gaussians, load_iteration=str(loaded_step) if dataset is None else None)
+                # NOTE: This is a hack to match the RNG state of GS on 360 scenes
+                _tmp = list(range((len(next(iter(scene.train_cameras.values()))) + 6) // 7))
+                random.shuffle(_tmp)
+                return scene
+            finally:
+                sceneLoadTypeCallbacks["Colmap"] = backup
 
 
     def rendering_setup(self):
@@ -175,17 +383,20 @@ class GSRTMethod(Method):
                                    self.retained_opacity,self.retained_sh,
                                    self.active_sh_degree,self._color)
 
+    def oneupSHdegree(self):
+        if self.active_sh_degree < self.max_sh_degree:
+            self.active_sh_degree += 1
 
     def training_setup(self):
 
-        self.viewpoint_ids = torch.arange(1)
+        self.viewpoint_ids = torch.arange(len(self.train_dataset['cameras']))
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda") 
 
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
-        self.densify_from_iter = 3500#500
+        self.densify_from_iter = 1500#500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
         self.percent_dense = 0.01
@@ -234,6 +445,8 @@ class GSRTMethod(Method):
 
     @property
     def get_scaling(self):
+        if self._3dgs_data:
+            return self.scaling_activation(self._scaling)*1.5
         return self.scaling_activation(self._scaling)
 
     @property
@@ -423,8 +636,16 @@ class GSRTMethod(Method):
 
         self.update_learning_rate(iteration)
 
-        vp_id = self.viewpoint_ids[iteration%self.viewpoint_ids.shape[0]] 
-        img = torch.from_numpy(self.train_dataset['images'][vp_id][:,:,:3])
+        if iteration % 1000 == 0:
+            self.oneupSHdegree()
+
+        # if not self._viewpoint_stack:
+        #     loadCam.was_called = False  # type: ignore
+        #     self._viewpoint_stack = self.scene.getTrainCameras().copy()
+        #     if any(not getattr(cam, "_patched", False) for cam in self._viewpoint_stack):
+        #         raise RuntimeError("could not patch loadCam!")
+        # viewpoint_cam = self._viewpoint_stack.pop(randint(0, len(self._viewpoint_stack) - 1))
+        vp_id = self.viewpoint_ids[randint(0, self.viewpoint_ids.shape[0] - 1)] 
         train_cameras = self.train_dataset['cameras']
         cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
         camera_th = cameras_th.__getitem__(vp_id)
@@ -437,20 +658,24 @@ class GSRTMethod(Method):
             'ray_directions':ray_directions.float().squeeze(0).contiguous(),
             'width':res_x,
             'height':res_y,
-            'target_img':img.reshape(res_x*res_y,3).cuda(),
             'sh_deg':self.active_sh_degree
         }
-        L,out_img = trace_function(setup, self.get_opacity, self._xyz, 
+        gt_image = torch.from_numpy(self.train_dataset['images'][vp_id][:,:,:3]).reshape(res_x*res_y,3).cuda()
+        image = trace_function(setup, self.get_opacity, self._xyz, 
                                    self.get_scaling, self._rotation,
                                    self.get_features,
                                    self._color)
-        L.backward()
+        
+        Ll1 = l1_loss(image, gt_image)
+        # ssim_value = ssim(image.reshape(res_y,res_x,3), gt_image.reshape(res_y,res_x,3))
+        loss = Ll1#(1.0 - self.opt.lambda_dssim) * Ll1 + self.opt.lambda_dssim * (1.0 - ssim_value)
+        loss.backward()
 
         with torch.no_grad():
 
             # Log
             if iteration % 10 == 0:
-                print(f'Iter {iteration}, viewpoint {vp_id}, loss {L.detach().item()}')
+                print(f'Iter {iteration}, viewpoint {vp_id}, loss {loss.detach().item()}')
 
             # Densification
             if iteration < self.densify_until_iter:
@@ -469,28 +694,27 @@ class GSRTMethod(Method):
             self.optimizer.zero_grad()
 
 
-        return {"mse":L.detach().item(),"vp_id":vp_id, "out_image":out_img.detach().cpu().reshape(res_y,res_x,3).numpy()}
+        return {"loss":loss.detach().item(),"vp_id":vp_id, "out_image":image.detach().cpu().reshape(res_y,res_x,3).numpy()}
 
 
     @torch.no_grad()
     def render(self, camera : Cameras, *, options=None):
 
         camera_th = camera.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
-        camera_th = camera_th.__getitem__(0)
+        vp_id = 0 if options is None else options.get('vp_id',0)
+        camera_th = camera_th.__getitem__(vp_id)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
         res_x, res_y = camera_th.image_sizes
 
         time_ms = 0
-        nit = 1
+        nit = 1 if options is None else options.get('num_avg_it',1)
         for i in range(nit):
             res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
                                          ray_directions.float().squeeze(0).contiguous(),
                                          res_x, res_y,
                                          False,torch.tensor(0.))
             time_ms += res["time_ms"]
-            #print(i,time_ms)
-            #print(res["num_its"])
         time_ms /= nit
         
         color = res["radiance"].cpu().reshape(res_y,res_x,3).numpy()
@@ -499,15 +723,15 @@ class GSRTMethod(Method):
         debug_map_1 = res["debug_map_1"].cpu().reshape(res_x,res_y,3).numpy()
         time_ms = res["time_ms"]
         num_its = res["num_its"]
-        #print(num_its)
-        #print(1000/time_ms, num_its/time_ms, res_x,res_y)
-        print(time_ms, num_its, res_x,res_y)
         
         return {
             "color": color, #+ transmittance,
             "transmittance": transmittance,
             "debug_map_0": debug_map_0,
             "debug_map_1": debug_map_1,
+            "time_ms": time_ms,
+            "num_its": num_its,
+            "res_xy": (res_x,res_y) 
         }
 
     
@@ -517,7 +741,9 @@ class GSRTMethod(Method):
                     'f_rest':self._features_rest.detach(),
                     'opacity':self._opacity.detach(),
                     'scaling':self._scaling.detach(),
-                    'rotation':self._rotation.detach()
+                    'rotation':self._rotation.detach(),
+                    'color':self._color.detach(),
+                    'sh_deg':self.active_sh_degree
                     },f'{path}/checkpoint.pt')
 
 

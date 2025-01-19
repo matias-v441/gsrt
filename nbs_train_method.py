@@ -43,6 +43,7 @@ train_dataset = load_dataset(data,
                              supported_camera_models=method_info.get("supported_camera_models"),
                              load_features=True)
 
+
 # Load eval dataset
 #test_dataset = load_dataset(data, 
 #                            split="test", 
@@ -120,8 +121,8 @@ with tqdm(total=model_info["num_iterations"]) as pbar:
         if step%10==0:
             print('SAVED')
             model.save("gsrt_checkpoint")
-        wandb.log({f'mse_{vp_id}':metrics['mse'],
-                   f'image_{vp_id}':out_img
+        wandb.log({f'loss':metrics['loss'],
+                   f'image':out_img
                    })
         pbar.update()
 

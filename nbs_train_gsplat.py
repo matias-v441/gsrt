@@ -63,22 +63,6 @@ model = method_cls(
 import matplotlib.pyplot as plt
 import numpy as np
 
-# model.rendering_setup()
-# im = model.render(train_dataset['cameras'])['color']
-# print(np.max(im))
-# plt.figure()
-# plt.imshow(im)
-# plt.show()
-# quit()
-
-# model.training_setup()
-# tr = model.train_iteration(0)
-# plt.figure()
-# print(np.max(tr["out_image"]))
-# plt.imshow(tr['out_image']/np.max(tr['out_image'],axis=0))
-# plt.show()
-# quit()
-
 # Training loop
 model_info = model.get_info()
 
@@ -103,9 +87,9 @@ wandb.init(
 with tqdm(total=model_info["num_iterations"]) as pbar:
     for step in range(model_info["num_iterations"]):
         metrics = model.train_iteration(step)
+        out_img = wandb.Image(metrics['out_image']/np.max(metrics['out_image']))
         pbar.set_postfix({"psnr": f"{metrics['psnr']:.2f}"})
-        wandb.log({f'loss':metrics['loss']})
-        wandb.log({f'psnr':metrics['psnr']})
+        #wandb.log({'loss':metrics['loss'],'image':out_img})
         pbar.update()
 
 # Save the model
