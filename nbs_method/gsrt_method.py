@@ -130,39 +130,15 @@ class GSRTMethod(Method):
             "init_num_points": 100000,
         }
 
-        self.densification_interval = 100
-        self.opacity_reset_interval = 3000
-        self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
-        self.percent_dense = 0.01
+        self.setup_functions()
 
         self.checkpoint = checkpoint
 
-        self.best_model = None
-        self.best_loss = torch.inf
+        self.scene_extent = self.train_dataset['metadata']['expected_scene_scale']
+
+        self.initialize_for_blender()
 
         self.tracer = GaussiansTracer(torch.device("cuda:0"))
-
-        torch.manual_seed(0)
-
-        part_num = self.hparams['init_num_points']
-        scene_min = torch.tensor([-1.,-1.,-1.])
-        scene_max = torch.tensor([1.,1.,1.])
-        self._xyz = ((torch.rand(part_num,3)-.5)*(scene_max-scene_min)*.5+(scene_max+scene_min)*.5).cuda()
-        self._scaling = torch.log(torch.ones(1,3).repeat(part_num,1)*0.01).cuda()
-        self._rotation = torch.hstack([torch.ones(part_num,1),torch.zeros(part_num,3)]).cuda()
-        self._opacity = (torch.ones(part_num,1)*.4).cuda()
-        self._features_dc = torch.zeros(part_num,1,3).cuda()
-        self._features_rest = torch.zeros(part_num,15,3).cuda()
-        self.active_sh_degree = 3
-
-        self._color = torch.ones(part_num,3)*torch.tensor([0.,1.,0.]).cuda() 
-
-        self.viewpoint_ids = torch.arange(1)
-
-        self.setup_functions()
-        self.training_setup()
 
 
     def setup_functions(self):
@@ -174,9 +150,45 @@ class GSRTMethod(Method):
         self.inverse_opacity_activation = inverse_sigmoid
 
 
+    def initialize_for_blender(self):
+
+        torch.manual_seed(0)
+        n = self.hparams['init_num_points']
+        scene_min = torch.tensor([-1.,-1.,-1.])*self.scene_extent/2
+        scene_max = torch.tensor([1.,1.,1.])*self.scene_extent/2
+        self._xyz = ((torch.rand(n,3)-.5)*(scene_max-scene_min)*.5+(scene_max+scene_min)*.5).cuda()
+        self._scaling = torch.log(torch.ones(1,3).repeat(n,1)*0.01).cuda()
+        self._rotation = torch.hstack([torch.ones(n,1),torch.zeros(n,3)]).cuda()
+        #self._opacity = self.inverse_opacity_activation(torch.ones(n,1)*0.01).cuda()
+        self._opacity = self.inverse_opacity_activation(torch.ones(n,1)*0.4).cuda()
+        self._features_dc = torch.zeros(n,1,3).cuda()
+        self._features_rest = torch.zeros(n,15,3).cuda()
+        self.active_sh_degree = 3
+        self._color = (torch.ones(n,3)*torch.tensor([0.,1.,0.])).cuda() 
+
+
+    def rendering_setup(self):
+        self.retained_scaling = self.get_scaling
+        self.retained_opacity = self.get_opacity
+        self.retained_sh = self.get_features
+        self.tracer.load_gaussians(self._xyz,self._rotation,self.retained_scaling,
+                                   self.retained_opacity,self.retained_sh,
+                                   self.active_sh_degree,self._color)
+
+
     def training_setup(self):
-        self.xyz_gradient_accum = torch.zeros(self.params[1].shape[0])
+
+        self.viewpoint_ids = torch.arange(1)
+
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda") 
+
+        self.densification_interval = 100
+        self.opacity_reset_interval = 3000
+        self.densify_from_iter = 3500#500
+        self.densify_until_iter = 15_000
+        self.densify_grad_threshold = 0.0002
+        self.percent_dense = 0.01
 
         position_lr_init = 0.00016
         position_lr_final = 0.0000016
@@ -188,7 +200,6 @@ class GSRTMethod(Method):
         rotation_lr = 0.001
 
         self.spatial_lr_scale = 0
-        self.scene_extent = self.train_dataset['metadata']['expected_scene_scale']
 
         l = [
             {'params': [self._xyz], 'lr': position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -388,10 +399,10 @@ class GSRTMethod(Method):
         self.densify_and_split(grads, max_grad, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
-        # if max_screen_size:
-        #     big_points_vs = self.max_radii2D > max_screen_size
-        #     big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
-        #     prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+        if max_screen_size:
+            #big_points_vs = self.max_radii2D > max_screen_size
+            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            prune_mask = torch.logical_or(prune_mask, big_points_ws)
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
@@ -402,15 +413,17 @@ class GSRTMethod(Method):
     #    self.denom[update_filter] += 1 
 
     def add_densification_stats(self):
-        self.xyz_gradient_accum += torch.linalg.norm(self.params[1].grad,dim=1)
+        self.xyz_gradient_accum += torch.linalg.norm(self._xyz.grad,dim=1,keepdim=True)
         self.denom += 1
         
 
     def train_iteration(self, step: int) -> Dict[str, float]:
 
-        self.update_learning_rate(step)
+        iteration = step+1
 
-        vp_id = self.viewpoint_ids[step%self.viewpoint_ids.shape[0]] 
+        self.update_learning_rate(iteration)
+
+        vp_id = self.viewpoint_ids[iteration%self.viewpoint_ids.shape[0]] 
         img = torch.from_numpy(self.train_dataset['images'][vp_id][:,:,:3])
         train_cameras = self.train_dataset['cameras']
         cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
@@ -427,34 +440,28 @@ class GSRTMethod(Method):
             'target_img':img.reshape(res_x*res_y,3).cuda(),
             'sh_deg':self.active_sh_degree
         }
-        L,out_img = trace_function(setup,self.get_opacity,self._xyz,self.get_scaling,self._rotation,self.get_features,self._color)
+        L,out_img = trace_function(setup, self.get_opacity, self._xyz, 
+                                   self.get_scaling, self._rotation,
+                                   self.get_features,
+                                   self._color)
         L.backward()
 
         with torch.no_grad():
 
             # Log
-            print(f'iter {step}, vp_id {vp_id} ---------------------')
-            def print_stats(param,name):
-                print(name,torch.mean(param,dim=0),torch.min(param,dim=0)[0],torch.max(param,dim=0)[0])
-            print_stats(self.xyz.detach().cpu(),'xyz')
-            print_stats(self.scale.detach().cpu(),'scale')
-            print_stats(self.color.detach().cpu(),'color')
-            #print_stats(self.sh.detach().cpu(),'sh')
-            print_stats(self.opac.detach().cpu(),'opac')
-
-            print(L.detach().item())
-            print('------------------')
+            if iteration % 10 == 0:
+                print(f'Iter {iteration}, viewpoint {vp_id}, loss {L.detach().item()}')
 
             # Densification
-            if step < self.densify_until_iter:
+            if iteration < self.densify_until_iter:
 
                 self.add_densification_stats()
 
-                if step > self.densify_from_iter and step % self.densification_interval == 0:
+                if iteration > self.densify_from_iter and step % self.densification_interval == 0:
                     size_threshold = 20 if step > self.opacity_reset_interval else None
                     self.densify_and_prune(self.densify_grad_threshold,0.005,self.scene_extent,size_threshold)
 
-                if step % self.opacity_reset_interval == 0: #or (dataset.white_background and iteration == opt.densify_from_iter):
+                if iteration % self.opacity_reset_interval == 0: #or (dataset.white_background and iteration == opt.densify_from_iter):
                     self.reset_opacity() 
 
             # Optimizer step
@@ -505,7 +512,13 @@ class GSRTMethod(Method):
 
     
     def save(self, path):
-        torch.save(self.best_model,f'{path}/checkpoint.pt')
+        torch.save({'xyz':self._xyz.detach(),
+                    'f_dc':self._features_dc.detach(),
+                    'f_rest':self._features_rest.detach(),
+                    'opacity':self._opacity.detach(),
+                    'scaling':self._scaling.detach(),
+                    'rotation':self._rotation.detach()
+                    },f'{path}/checkpoint.pt')
 
 
     @classmethod

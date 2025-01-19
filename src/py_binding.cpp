@@ -126,12 +126,12 @@ struct PyGaussiansTracer {
         const torch::Tensor &color
         ) {
 
-        CHECK_HOST_FLOAT_DIM(xyz,3);
-        CHECK_HOST_FLOAT_DIM(rotation,4);
-        CHECK_HOST_FLOAT_DIM(scaling,3);
-        CHECK_HOST_FLOAT_DIM(opacity,1);
-        CHECK_HOST_FLOAT_DIM(sh,3);
-        CHECK_HOST_FLOAT_DIM(color,3);
+        CHECK_FLOAT_DIM(xyz,3);
+        CHECK_FLOAT_DIM(rotation,4);
+        CHECK_FLOAT_DIM(scaling,3);
+        CHECK_FLOAT_DIM(opacity,1);
+        CHECK_FLOAT_DIM(sh,3);
+        CHECK_FLOAT_DIM(color,3);
         
         particles.numgs = xyz.numel() / 3;
         particles.xyz = reinterpret_cast<float3 *>(xyz.data_ptr());

@@ -641,7 +641,6 @@ extern "C" __global__ void __raygen__rg() {
         const Hit& chit = hits[0];
         float3 rad; bool clamped[3];
         float3 pos = ray_origin+ray_direction*chit.thit;
-        //printf("HIT %f %f %f \n", pos.x, pos.y, pos.z);
         compute_radiance(chit.id,ray_origin,ray_direction,rad,clamped);
         add_samp(acc,rad,chit);
         hitq_pop(hits,hits_size);
@@ -678,7 +677,6 @@ extern "C" __global__ void __raygen__rg() {
             float3 rad; bool clamped[3];
 
             float3 pos = ray_origin+ray_direction*chit.thit;
-            //printf("HIT %f %f %f \n", pos.x, pos.y, pos.z);
             compute_radiance(chit.id,ray_origin,ray_direction,rad,clamped);
             acc_bwd.radiance += rad*chit.resp*acc.transmittance;
             add_grad(acc_bwd,rad,acc,chit.id,

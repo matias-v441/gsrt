@@ -22,9 +22,6 @@ struct GaussiansData
     float *opacity;
     float3 *sh;
     float3 *color;
-
-    float3 *normals;
-
     int sh_deg;
 };
 
@@ -55,12 +52,6 @@ struct TracingParams
     float3* dL_dC;
 };
 
-struct SceneBuffers{
-
-    bool* rad_clamped;
-    float3* rad_sh;
-};
-
 class GaussiansAS {
    public:
     GaussiansAS() noexcept;
@@ -68,8 +59,9 @@ class GaussiansAS {
     GaussiansAS(
         const OptixDeviceContext &context,
         const uint8_t device,
-        const GaussiansData& data) : GaussiansAS(context, device) {
-        build(data);
+        const GaussiansData& d_gaussians):GaussiansAS(context, device){
+        this->d_gaussians = d_gaussians;
+        build();
     }
 
     ~GaussiansAS() noexcept(false);
@@ -92,8 +84,8 @@ class GaussiansAS {
         swap(first.d_gas_output_buffer, second.d_gas_output_buffer);
         swap(first.d_vertices, second.d_vertices);
         swap(first.d_triangles, second.d_triangles);
+        swap(first.d_normals, second.d_normals);
         swap(first.d_gaussians, second.d_gaussians);
-        //swap(first.d_scene_buffers, second.d_scene_buffers);
     }
 
     OptixTraversableHandle gas_handle() const {
@@ -107,16 +99,16 @@ class GaussiansAS {
         return gas_handle_ != 0;
     }
 
-    const GaussiansData& device_gaussians() const{
+    const GaussiansData& gaussians() const{
         return d_gaussians;
     }
 
-    const SceneBuffers& device_scene_buffers() const{
-        return d_scene_buffers;
+    const float3* normals() const{
+        return d_normals;
     }
 
    private:
-    void build(const GaussiansData& gaussians);
+    void build();
 
     void release();
     OptixDeviceContext context = nullptr;
@@ -125,8 +117,8 @@ class GaussiansAS {
     CUdeviceptr d_gas_output_buffer = 0;
     CUdeviceptr d_vertices = 0;
     CUdeviceptr d_triangles = 0;
+    float3* d_normals = 0;
     GaussiansData d_gaussians{};
-    SceneBuffers d_scene_buffers{};
 };
 
 

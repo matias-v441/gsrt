@@ -453,7 +453,7 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.ray_origins = tracing_params.ray_origins;
         params.ray_directions = tracing_params.ray_directions;
 
-        auto& gs = gaussians_structure->device_gaussians();
+        auto& gs = gaussians_structure->gaussians();
         params.num_gs = gs.numgs;
         params.gs_xyz = gs.xyz;
         params.gs_rotation = gs.rotation;
@@ -461,8 +461,9 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.gs_opacity = gs.opacity;
         params.gs_sh = gs.sh;
         params.sh_deg = gs.sh_deg;
-        params.gs_normals = gs.normals;
         params.gs_color = gs.color;
+
+        params.gs_normals = gaussians_structure->normals();
 
         params.radiance = tracing_params.radiance;
         params.transmittance = tracing_params.transmittance;
@@ -481,10 +482,6 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.grad_color = tracing_params.grad_color;
 
         params.dL_dC = tracing_params.dL_dC;
-
-        //auto& sbs = gaussians_structure->device_scene_buffers();
-        //params.rad_clamped = sbs.rad_clamped;
-        //params.rad_sh = sbs.rad_sh;
 
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),
@@ -506,7 +503,8 @@ GaussiansAS::GaussiansAS() noexcept
       gas_handle_(0),
       d_gas_output_buffer(0),
       d_vertices(0),
-      d_triangles(0) {}
+      d_triangles(0),
+      d_normals(0) {}
 
 
 GaussiansAS::GaussiansAS(GaussiansAS &&other) noexcept
@@ -516,8 +514,8 @@ GaussiansAS::GaussiansAS(GaussiansAS &&other) noexcept
       d_gas_output_buffer(std::exchange(other.d_gas_output_buffer, 0)),
       d_vertices(std::exchange(other.d_vertices, 0)),
       d_triangles(std::exchange(other.d_triangles, 0)),
-      d_gaussians(std::exchange(other.d_gaussians, {})),
-      d_scene_buffers(std::exchange(other.d_scene_buffers, {})) {}
+      d_normals(std::exchange(other.d_normals, nullptr)),
+      d_gaussians(std::exchange(other.d_gaussians, {})) {}
 
 void GaussiansAS::release() {
     bool device_set = false;
@@ -532,15 +530,7 @@ void GaussiansAS::release() {
     gas_handle_ = 0;
     device_free(d_vertices);
     device_free(d_triangles);
-    device_free(d_gaussians.xyz);
-    device_free(d_gaussians.rotation);
-    device_free(d_gaussians.scaling);
-    device_free(d_gaussians.opacity);
-    device_free(d_gaussians.sh);
-    device_free(d_gaussians.normals);
-    device_free(d_gaussians.color);
-    device_free(d_scene_buffers.rad_clamped);
-    device_free(d_scene_buffers.rad_sh);
+    device_free(d_normals);
 }
 
 GaussiansAS::~GaussiansAS() noexcept(false) {
@@ -568,29 +558,6 @@ namespace icosahedron{
     };
 }
 
-
-namespace triangle{
-
-    constexpr int n_verts = 3;
-    constexpr int n_faces = 1;
-    float3 vertices[n_verts] = {make_float3(-1.,-1.,0.),make_float3(-1.,1.,0.),make_float3(1.,0.,0.)};
-    uint3 triangles[n_faces] = {make_uint3(2,1,0)};
-}
-
-
-namespace tetrahedron{
-
-    constexpr int n_verts = 4;
-    constexpr int n_faces = 4;
-    float3 vertices[n_verts] = {make_float3(-1.,-1.,0.),make_float3(-1.,1.,0.),make_float3(1.,0.,0.),make_float3(0.,0.,1.)};
-    uint3 triangles[n_faces] = {make_uint3(2,1,0), make_uint3(2,1,3), make_uint3(0,1,3), make_uint3(2,0,3)};
-    void construct(){
-        for(int i = 0; i < n_verts; ++i){
-            vertices[i] -= make_float3(-.25f,0.f,.25f);
-        }
-    }
-}
-
 glm::mat3 construct_rotation(float4 vec){
     glm::vec4 q = glm::normalize(glm::vec4(vec.x,vec.y,vec.z,vec.w));
     glm::mat3 R(0.0f);
@@ -610,27 +577,27 @@ glm::mat3 construct_rotation(float4 vec){
     return R;
 }
 
-void construct_primitives(const GaussiansData& data, std::vector<float3>& vertices,
-     std::vector<uint3>& triangles, std::vector<float3>& normals){
+void construct_primitives(const int numgs, const float3* xyz, const float* opacity, const float3* scaling, const float4* rotation,
+                        std::vector<float3>& vertices,std::vector<uint3>& triangles, std::vector<float3>& normals){
+
     namespace primitive = icosahedron;
-    //primitive::construct();
     using primitive::n_verts;
     using primitive::n_faces;
-    vertices.resize(n_verts*data.numgs);
-    triangles.resize(n_faces*data.numgs);
-    normals.resize(n_faces*data.numgs);
+    vertices.resize(n_verts*numgs);
+    triangles.resize(n_faces*numgs);
+    normals.resize(n_faces*numgs);
     const float alpha_min = .01;
-    for(int i = 0; i < data.numgs; ++i){
+    for(int i = 0; i < numgs; ++i){
 
-        glm::mat3 R = construct_rotation(data.rotation[i]);
-        float adaptive_scale = sqrt(2.*log(data.opacity[i]/alpha_min));
-        float3 s = data.scaling[i]*adaptive_scale;
+        glm::mat3 R = construct_rotation(rotation[i]);
+        float adaptive_scale = sqrt(2.*log(opacity[i]/alpha_min));
+        float3 s = scaling[i]*adaptive_scale;
         glm::vec3 scale = glm::vec3(s.x,s.y,s.z);
 
         for(int j = 0; j < n_verts; ++j){
             float3 v = primitive::vertices[j];
             glm::vec3 w = R*(scale*glm::vec3(v.x,v.y,v.z));
-            vertices[j+i*n_verts] = make_float3(w.x,w.y,w.z)+data.xyz[i];
+            vertices[j+i*n_verts] = make_float3(w.x,w.y,w.z)+xyz[i];
         }
 
         for(int j = 0; j < n_faces; ++j){
@@ -645,15 +612,25 @@ void construct_primitives(const GaussiansData& data, std::vector<float3>& vertic
     }
 }
 
-void GaussiansAS::build(const GaussiansData& data) {
+void GaussiansAS::build() {
     release();
 
     CUDA_CHECK(cudaSetDevice(device));
 
+    const int numgs = d_gaussians.numgs;
+    std::vector<float3> xyz(numgs);
+    std::vector<float> opacity(numgs);
+    std::vector<float3> scaling(numgs);
+    std::vector<float4> rotation(numgs);
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(xyz.data()),d_gaussians.xyz,numgs*sizeof(float3),cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(opacity.data()),d_gaussians.opacity,numgs*sizeof(float),cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(scaling.data()),d_gaussians.scaling,numgs*sizeof(float3),cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(rotation.data()),d_gaussians.rotation,numgs*sizeof(float4),cudaMemcpyDeviceToHost));
+
     std::vector<float3> vertices;
     std::vector<uint3> triangles;
     std::vector<float3> normals;
-    construct_primitives(data, vertices, triangles, normals);
+    construct_primitives(numgs,xyz.data(),opacity.data(),scaling.data(),rotation.data(), vertices,triangles,normals);
 
     auto toDevice = [&](auto& dst, void* src, size_t size){
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dst), size));
@@ -662,20 +639,7 @@ void GaussiansAS::build(const GaussiansData& data) {
     
     toDevice(d_vertices, vertices.data(), vertices.size() * sizeof(float3));
     toDevice(d_triangles, triangles.data(), triangles.size() * sizeof(uint3));
-
-    d_gaussians.numgs = data.numgs;
-    d_gaussians.sh_deg = data.sh_deg;
-    toDevice(d_gaussians.xyz, data.xyz, data.numgs*sizeof(float3));
-    toDevice(d_gaussians.rotation, data.rotation, data.numgs*sizeof(float4));
-    toDevice(d_gaussians.scaling, data.scaling, data.numgs*sizeof(float3));
-    toDevice(d_gaussians.opacity, data.opacity, data.numgs*sizeof(float));
-    toDevice(d_gaussians.sh, data.sh, data.numgs*sizeof(float3)*16);
-    toDevice(d_gaussians.normals, normals.data(), normals.size()*sizeof(float3));
-    toDevice(d_gaussians.color, data.color, data.numgs*sizeof(float3));
-
-    // Allocate buffers of scene size 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_scene_buffers.rad_clamped), data.numgs*3*sizeof(bool)));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_scene_buffers.rad_sh), data.numgs*sizeof(float3)));
+    toDevice(d_normals, normals.data(), normals.size() * sizeof(float3));
 
     // Use default options for simplicity.  In a real use case we would want to
     // enable compaction, etc
