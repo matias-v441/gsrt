@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "utils/Matrix.h"
+using namespace util;
 
 extern unsigned char ptx_code_file[];
 
@@ -48,6 +50,7 @@ struct TracingParams
     float *grad_resp;
     float3 *grad_sh;
     float3 *grad_color;
+    Matrix3x3 *grad_invRS;
 
     float3* dL_dC;
 };

@@ -14,8 +14,8 @@ __constant__ Params params;
 constexpr float eps = 1e-6;
 }
 
-__device__ Matrix3x3 construct_rotation(float4 vec){
-    float4 q = normalize(vec);
+__device__ Matrix3x3 construct_rotation(float4 q){
+    q = normalize(q);
     float r = q.x;
     float x = q.y;
     float y = q.z;
@@ -34,7 +34,6 @@ __device__ void compute_radiance(unsigned int gs_id, const float3 &ray_origin,
     if(deg == -1){
         rad = params.gs_color[gs_id];
         return;
-        //printf("%d\n",deg);
     }
     //const float3 dir = -ray_direction;
     const float3 mu = params.gs_xyz[gs_id];
@@ -296,12 +295,17 @@ __device__ __forceinline__ void hitq_pop(H* hitq, unsigned int& hitq_size){
     hitq_size--;
 }
 
+
+__device__ __forceinline__ void inv_S_times_M_(const float3 s, Matrix3x3& M){
+    M.setRow(0,M.getRow(0)/max(s.x,eps));
+    M.setRow(1,M.getRow(1)/max(s.y,eps));
+    M.setRow(2,M.getRow(2)/max(s.z,eps));
+}
+
 __device__ __forceinline__ Matrix3x3 construct_inv_RS(const float4& rot, const float3& s){
-    Matrix3x3 R = construct_rotation(rot).transpose();
-    R.setRow(0,R.getRow(0)/(s.x+eps));
-    R.setRow(1,R.getRow(1)/(s.y+eps));
-    R.setRow(2,R.getRow(2)/(s.z+eps));
-    return R;
+    Matrix3x3 RT = construct_rotation(rot).transpose();
+    inv_S_times_M_(s,RT);
+    return RT;
 }
 
 __device__ void compute_response(
@@ -311,10 +315,12 @@ __device__ void compute_response(
 
     float3 og = inv_RS*(mu-o);
     float3 dg = inv_RS*d;
-    tmax = dot(og,dg)/(dot(dg,dg)+eps);
+    tmax = dot(og,dg)/max(eps,dot(dg,dg));
+    //tmax = dot(og,dg)/(eps+dot(dg,dg));
     float3 c_samp = o+tmax*d;
     float3 v = inv_RS*(c_samp-mu);
-    resp = opacity*exp(-dot(v,v));
+    resp = min(0.99f,opacity*exp(-dot(v,v)));
+    //resp = opacity*exp(-dot(v,v));
 }
 
 struct Acc{
@@ -369,10 +375,11 @@ __device__ __forceinline__ Matrix3x3 TxM(const Matrix3x3& M,
           +m1.z*T31+m2.z*T32+m3.z*T33; 
 }
 
-__device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, const Acc& acc_full,
+__device__ __forceinline__ void add_grad_0(const Acc& acc, const float3& rad, const Acc& acc_full,
                                         int chit_id, const float3& c_samp,
                                         const float resp, 
                                         const float3 ray_origin,
+                                        const float3 ray_direction,
                                         const bool* clamped
                                         ){
 
@@ -388,8 +395,9 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
     const float3 &full_rad = acc_full.radiance;
     const float3 &pos = params.gs_xyz[chit_id];
     const float &opacity = params.gs_opacity[chit_id];
-
-    const float3 dC_dresp = prev_acc_trans*(particle_rad-full_rad+acc_rad);
+    
+    float3 background{1.f,1.f,1.f};
+    const float3 dC_dresp = prev_acc_trans*(particle_rad-full_rad+acc_rad) - background*acc_full.transmittance/max(eps,1.f-resp);;
     const float3 x = c_samp-pos;
     const float3 v = inv_RS*x;
     const float G = exp(-dot(v,v));
@@ -572,6 +580,316 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
     atomicAdd(&params.grad_rotation[chit_id].w,dL_dq[3]);
 }
 
+__device__ __forceinline__ void add_grad_I(const Acc& acc, const float3& rad, const Acc& acc_full,
+                                        int chit_id, const float3& csamp,
+                                        const float resp, 
+                                        const float3 ray_origin,
+                                        const float3 ray_direction,
+                                        const bool* clamped
+                                        ){
+
+    atomicAdd(params.num_its_bwd,1ull);
+
+    const float4 quat = params.gs_rotation[chit_id];
+    const float3 scale = params.gs_scaling[chit_id];
+    const float3 pos = params.gs_xyz[chit_id];
+    const float opacity = params.gs_opacity[chit_id];
+
+    float3 background{1.f,1.f,1.f};
+    //const float3 dC_dresp = (acc.transmittance*rad - (acc_full.radiance - acc.radiance)/*/max(eps,1.f-resp)*/) - background*acc_full.transmittance/max(eps,1.f-resp);
+    const float3 dC_dresp = acc.transmittance*(rad - acc_full.radiance + acc.radiance)/*/max(eps,1.f-resp)*/ - background*acc_full.transmittance/max(eps,1.f-resp);
+
+    const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
+
+    const float3 csamp_pos = csamp-pos;
+    const float3 xg = inv_RS*csamp_pos;
+    const float G = __expf(-dot(xg,xg));
+
+    const float3 dresp_dxg = -2.f*opacity*G*xg;//^T
+    const Matrix3x3 dxg_dcsamp = inv_RS;
+    const float3 dg = inv_RS * ray_direction;
+    const float3 o_pos = ray_origin-pos;
+    const float3 og = inv_RS * o_pos;
+    float dg2 = max(eps,dot(dg,dg));
+    const float3 dcsamp_dt = ray_direction;
+    const float dresp_dt = dot(dresp_dxg,dxg_dcsamp*dcsamp_dt);
+    const float3 dt_dog = dg/dg2;//^T
+    const float3 dt_ddg = og/dg2 - 2.f*dot(og,dg)/max(dg2*dg2,eps) * dg;//^T
+    const float3 dresp_dog = dresp_dt*dt_dog;//^T
+    const float3 dresp_ddg = dresp_dt*dt_ddg;//^T
+
+    const Matrix3x3 dog_dmu = (-1.f)*inv_RS;
+    const Matrix3x3 dxg_dmu = (1.f)*inv_RS;
+    const float3 dresp_dmu = dxg_dmu.transpose()*dresp_dxg + dog_dmu.transpose()*dresp_dog;//^T
+
+    Matrix3x3 inv_RSS = inv_RS;
+    inv_S_times_M_(scale,inv_RSS);
+    const float3 dxg_ds_diag = (-1.f)*inv_RSS*csamp_pos;
+    const float3 dog_ds_diag = (-1.f)*inv_RSS*o_pos;
+    const float3 ddg_ds_diag = (-1.f)*inv_RSS*ray_direction;
+    const float3 dresp_ds = dresp_dxg*dxg_ds_diag + dresp_dog*dog_ds_diag + dresp_ddg*ddg_ds_diag;
+
+    const float qr=quat.x, qi=quat.y, qj=quat.z, qk=quat.w;
+    Matrix3x3 dR_dqr({
+        0.f, -qk, qj,
+        qk, 0.f, -qi,
+        -qj, qi, 0.f
+    });
+    dR_dqr *= 2.f;
+    Matrix3x3 dR_dqi({
+        0.f, qj, qk,
+        qj, -2.f*qi, -qr,
+        qk, qr, -2.f*qi
+    });
+    dR_dqi *= 2.f;
+    Matrix3x3 dR_dqj({
+        -2.f*qj, qi, qr,
+        qi, 0.f, qk,
+        -qr, qk, -2.f*qj
+    });
+    dR_dqj *= 2.f;
+    Matrix3x3 dR_dqk({
+        -2.f*qk, -qr, qi,
+        qr, -2.f*qk, qj,
+        qi, qj, 0.f
+    });
+    dR_dqk *= 2.f;
+
+    inv_S_times_M_(scale,dR_dqr);
+    inv_S_times_M_(scale,dR_dqi);
+    inv_S_times_M_(scale,dR_dqj);
+    inv_S_times_M_(scale,dR_dqk);
+
+    const float3 dxg_dqr = dR_dqr*csamp_pos;
+    const float3 dxg_dqi = dR_dqi*csamp_pos;
+    const float3 dxg_dqj = dR_dqj*csamp_pos;
+    const float3 dxg_dqk = dR_dqk*csamp_pos;
+
+    const float3 dog_dqr = dR_dqr*o_pos;
+    const float3 dog_dqi = dR_dqi*o_pos;
+    const float3 dog_dqj = dR_dqj*o_pos;
+    const float3 dog_dqk = dR_dqk*o_pos;
+
+    const float3 ddg_dqr = dR_dqr*ray_direction;
+    const float3 ddg_dqi = dR_dqi*ray_direction;
+    const float3 ddg_dqj = dR_dqj*ray_direction;
+    const float3 ddg_dqk = dR_dqk*ray_direction;
+
+    const float4 dresp_dq = {
+        dot(dresp_dxg,dxg_dqr)+dot(dresp_dog,dog_dqr)+dot(dresp_ddg,ddg_dqr),
+        dot(dresp_dxg,dxg_dqi)+dot(dresp_dog,dog_dqi)+dot(dresp_ddg,ddg_dqi),
+        dot(dresp_dxg,dxg_dqj)+dot(dresp_dog,dog_dqj)+dot(dresp_ddg,ddg_dqj),
+        dot(dresp_dxg,dxg_dqk)+dot(dresp_dog,dog_dqk)+dot(dresp_ddg,ddg_dqk)
+    };
+
+    const uint3 launch_idxy = optixGetLaunchIndex();
+    const uint3 launch_dim = optixGetLaunchDimensions();
+    const int launch_id = launch_idxy.x + launch_idxy.y*launch_dim.x;
+    const float3 dL_dC = params.dL_dC[launch_id];
+
+    const float dL_dresp = dot(dL_dC,dC_dresp);
+    atomicAdd(&params.grad_resp[chit_id],dL_dresp);
+
+    const float dL_dopac = dL_dresp*G;
+    atomicAdd(&params.grad_opacity[chit_id],dL_dopac);
+
+    float3 dL_dmu = dL_dresp * dresp_dmu;
+
+    const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
+    const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
+    float3 sh_grad_xyz;
+    compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
+    //dL_dmu += sh_grad_xyz;
+
+    atomicAdd_float3(params.grad_xyz[chit_id],dL_dmu);
+
+    const float3 dL_ds = dL_dresp*dresp_ds;
+    atomicAdd_float3(params.grad_scale[chit_id],dL_ds);
+
+    const float4 dL_dq = dL_dresp*dresp_dq;
+    atomicAdd(&params.grad_rotation[chit_id].x,dL_dq.x);
+    atomicAdd(&params.grad_rotation[chit_id].y,dL_dq.y);
+    atomicAdd(&params.grad_rotation[chit_id].z,dL_dq.z);
+    atomicAdd(&params.grad_rotation[chit_id].w,dL_dq.w);
+
+    //#define _norm_(x) sqrt(dot(x,x))
+    //if(sqrt(dot(grad_pos,grad_pos)) > 10.)
+    //    printf("POS GRAD NORM %f %f %f %f %f %f\n",
+    //        _norm_(d_resp_pos),
+    //        dL_dresp,
+    //        G,
+    //        _norm_(x),
+    //        _norm_((inv_RS*inv_RS.transpose())*x),
+    //        opacity);
+}
+
+
+__device__ __forceinline__ void add_grad_II(const Acc& acc, const float3& rad, const Acc& acc_full,
+                                        int chit_id, const float3& csamp,
+                                        const float resp, 
+                                        const float3 ray_origin,
+                                        const float3 ray_direction,
+                                        const bool* clamped
+                                        ){
+    
+    const float4 quat = params.gs_rotation[chit_id];
+    const float3 scale = params.gs_scaling[chit_id];
+    const float3 mu = params.gs_xyz[chit_id];
+    const float opacity = params.gs_opacity[chit_id];
+    const uint3 launch_idxy = optixGetLaunchIndex();
+    const uint3 launch_dim = optixGetLaunchDimensions();
+    const int launch_id = launch_idxy.x + launch_idxy.y*launch_dim.x;
+    const float3 dL_dC = params.dL_dC[launch_id];
+    const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
+
+    float3 background{1.f,1.f,1.f};
+    const float3 dC_dresp = acc.transmittance*rad - (acc_full.radiance - acc.radiance)/max(eps,1.f-resp)
+                            - background*acc_full.transmittance/max(eps,1.f-resp);
+    const float dL_dresp = dot(dL_dC,dC_dresp); 
+
+    const float3 x_mu = csamp-mu;
+    const float3 xg = inv_RS*x_mu;
+    const float G = __expf(-0.5*dot(xg,xg));
+
+    const float3 dresp_dxg = -opacity*G*xg;//^T
+    const Matrix3x3 dxg_dcsamp = inv_RS;
+    const float3 dg = inv_RS * ray_direction;
+    const float3 o_pos = ray_origin-mu;
+    const float3 og = inv_RS * o_pos;
+    float dg2 = max(eps,dot(dg,dg));
+    const float3 dcsamp_dt = ray_direction;
+    const float dresp_dt = dot(dresp_dxg,dxg_dcsamp*dcsamp_dt);
+    const float3 dt_dog = -dg/dg2;//^T
+    const float3 dt_ddg = -og/dg2 + 2.f*dot(og,dg)/max(dg2*dg2,eps) * dg;//^T
+    const float3 dresp_dog = dresp_dt*dt_dog;//^T
+    const float3 dresp_ddg = dresp_dt*dt_ddg;//^T
+
+    const Matrix3x3 dog_dmu = (-1.f)*inv_RS;
+    const Matrix3x3 dxg_dmu = (-1.f)*inv_RS;
+    const float3 dresp_dmu = dxg_dmu.transpose()*dresp_dxg + dog_dmu.transpose()*dresp_dog;//^T
+
+    const float3 dL_dmu = dL_dresp*dresp_dmu;
+    atomicAdd_float3(params.grad_xyz[chit_id],dL_dmu);
+
+    const float dL_dopac = dL_dresp*G;
+    atomicAdd(&params.grad_opacity[chit_id],dL_dopac);
+
+    const Matrix3x3 dL_dinvRS = dL_dresp*(outer(dresp_dxg,x_mu) + outer(dresp_dog,o_pos) + outer(dresp_ddg,ray_direction));
+    float* grad_invRS = (float*)(params.grad_invRS + chit_id);
+	for (int i = 0; i < 9; ++i){
+        atomicAdd(grad_invRS+i, dL_dinvRS[i]);
+    }
+
+    const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
+    const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
+    float3 sh_grad_xyz;
+    compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
+    //dL_dmu += sh_grad_xyz;
+}
+
+
+__device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, const Acc& acc_full,
+                                        int chit_id, const float3& csamp,
+                                        const float resp, 
+                                        const float3 ray_origin,
+                                        const float3 ray_direction,
+                                        const bool* clamped
+                                        ){
+    
+    const float4 quat = params.gs_rotation[chit_id];
+    const float3 scale = params.gs_scaling[chit_id];
+    const float3 mean3D = params.gs_xyz[chit_id];
+    const float o = params.gs_opacity[chit_id];
+    const uint3 launch_idxy = optixGetLaunchIndex();
+    const uint3 launch_dim = optixGetLaunchDimensions();
+    const int launch_id = launch_idxy.x + launch_idxy.y*launch_dim.x;
+    const float3 dL_dC = params.dL_dC[launch_id];
+    const Matrix3x3 SinvR = construct_inv_RS(quat,scale);
+    float3 ray_o = ray_origin;
+    float3 ray_d = ray_direction;
+    float3 grad_colors = dL_dC;
+
+    float3 background{1.f,1.f,1.f};
+    // const float3 dC_dresp = acc.transmittance*rad - (acc_full.radiance - acc.radiance)/max(eps,1.f-resp)
+    //                         - background*acc_full.transmittance/max(eps,1.f-resp);
+    // const float dL_dresp = dot(dL_dC,dC_dresp); 
+
+    // Compute intersection point
+    float3 ray_o_mean3D = ray_o - mean3D;
+    float3 o_g = SinvR * ray_o_mean3D; 
+    float3 d_g = SinvR * ray_d;
+    float dot_dg_dg = max(1e-6f, dot(d_g, d_g));
+    float d = -dot(o_g, d_g) / dot_dg_dg;
+
+    float3 pos = ray_o + d * ray_d;
+    float3 mean_pos = mean3D - pos;
+    float3 p_g = SinvR * mean_pos; 
+
+    float G = __expf(-0.5f * dot(p_g, p_g));
+    // float alpha = min(0.99f, o * G);
+    // if (alpha<params.alpha_min) continue;
+
+    // glm::vec3 c = computeColorFromSH_forward(params.deg, ray_d, params.shs + gs_idx * params.max_coeffs);
+
+    // float w = T * alpha;
+    // C += w * c;
+    // D += w * d;
+    // O += w;
+
+    // T *= (1 - alpha);
+    float3 c = rad;
+    float3 C = acc.radiance;
+    float3 C_final = acc_full.radiance;
+    float alpha = resp;
+    float T = acc.transmittance * (1.f - alpha);
+
+    //float3 dL_dc = grad_colors * w;
+    float dL_dd = 0;//grad_depths * w;
+    float dL_dalpha = (
+        dot(grad_colors, T * c - (C_final - C)) //+
+        //grad_depths * (T * d - (D_final - D)) + 
+        //-dot(grad_colors,background*acc_full.transmittance)//grad_alpha * (1 - O_final)
+    ) / max(1e-6f, 1 - alpha);
+    //computeColorFromSH_backward(params.deg, ray_d, params.shs + gs_idx * params.max_coeffs, dL_dc, params.grad_shs + gs_idx * params.max_coeffs);
+    float dL_do = dL_dalpha * G;
+    float dL_dG = dL_dalpha * o;
+    float3 dL_dpg = -dL_dG * G * p_g;
+    Matrix3x3 dL_dSinvR = outer(dL_dpg, mean_pos);
+    
+    float3 dL_dmean_pos = SinvR.transpose() * dL_dpg;
+    float3 dL_dmean3D = dL_dmean_pos;
+
+    dL_dd -= dot(dL_dmean_pos, ray_d);
+
+    float3 dL_dog = -dL_dd / dot_dg_dg * d_g;
+    float3 dL_ddg = -dL_dd / dot_dg_dg * o_g + 2 * dL_dd * dot(o_g, d_g) / max(1e-6f, dot_dg_dg * dot_dg_dg) * d_g;
+
+    dL_dSinvR += outer(dL_dog, ray_o_mean3D);
+    dL_dmean3D -= SinvR.transpose() * dL_dog;
+    dL_dSinvR += outer(dL_ddg, ray_d);
+
+    //atomic_add((float*)(params.grad_means3D+gs_idx), dL_dmean3D);
+    atomicAdd_float3(params.grad_xyz[chit_id],dL_dmean3D);
+    //atomicAdd(params.grad_opacity+gs_idx, dL_do);
+    atomicAdd(&params.grad_opacity[chit_id],dL_do);
+
+    // float* grad_SinvR = (float*)(params.grad_SinvR + gs_idx);
+    // for (int j=0; j<9;++j){
+    //     atomicAdd(grad_SinvR+j, dL_dSinvR[j/3][j%3]);
+    // }
+
+    float* grad_SinvR = (float*)(params.grad_invRS + chit_id);
+	for (int i = 0; i < 9; ++i){
+        atomicAdd(grad_SinvR+i, dL_dSinvR[i]);
+    }
+
+    const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
+    const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
+    float3 sh_grad_xyz;
+    compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
+    //dL_dmu += sh_grad_xyz;
+}
+
 
 constexpr int chunk_size = 1024;
 
@@ -580,7 +898,7 @@ constexpr int hits_max_capacity = chunk_size*num_recasts;
 
 constexpr int triagPerParticle = 20;
 constexpr float Tmin = 0.001;
-constexpr float respMin = 0.01f;
+constexpr float respMin = 1/255.f;//0.01f;
 
 extern "C" __global__ void __raygen__rg() {
 
@@ -681,7 +999,7 @@ extern "C" __global__ void __raygen__rg() {
             acc_bwd.radiance += rad*chit.resp*acc.transmittance;
             add_grad(acc_bwd,rad,acc,chit.id,
                 ray_origin+ray_direction*chit.thit,
-                chit.resp, ray_origin, clamped);
+                chit.resp, ray_origin, ray_direction, clamped);
             acc_bwd.transmittance *= (1.-chit.resp);
             hitq_pop(hits,hits_size);
         }
@@ -808,7 +1126,7 @@ extern "C" __global__ void __anyhit__bwd() {
         acc.radiance += rad*chit.resp*acc.transmittance;
         add_grad(acc,rad,acc_full,chit.id,
             origin+direction*chit.thit,
-            chit.resp,origin,clamped);
+            chit.resp,origin,direction,clamped);
         acc.transmittance *= (1.-chit.resp);
 
         optixSetPayload_0(__float_as_uint(acc.radiance.x));

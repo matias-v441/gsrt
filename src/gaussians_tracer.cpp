@@ -480,6 +480,7 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.grad_sh = tracing_params.grad_sh;
         params.grad_resp = tracing_params.grad_resp;
         params.grad_color = tracing_params.grad_color;
+        params.grad_invRS = tracing_params.grad_invRS;
 
         params.dL_dC = tracing_params.dL_dC;
 

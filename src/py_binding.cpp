@@ -8,6 +8,8 @@
 
 #include "gaussians_tracer.h"
 #include "utils/exception.h"
+#include "utils/Matrix.h"
+using namespace util;
 
 namespace py = pybind11;
 using namespace pybind11::literals;  // to bring in the `_a` literal
@@ -80,6 +82,7 @@ struct PyGaussiansTracer {
         torch::Tensor grad_xyz,grad_opacity,grad_sh,grad_scale,grad_rot;
         torch::Tensor grad_resp;
         torch::Tensor grad_color;
+        torch::Tensor grad_invRS;
         if(compute_grad){
             grad_xyz = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
             grad_opacity = torch::zeros({(long)particles.numgs}, torch::device(device).dtype(torch::kFloat32));
@@ -88,6 +91,7 @@ struct PyGaussiansTracer {
             grad_scale = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
             grad_rot = torch::zeros({(long)particles.numgs,4}, torch::device(device).dtype(torch::kFloat32));
             grad_color = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
+            grad_invRS = torch::zeros({(long)particles.numgs,3,3}, torch::device(device).dtype(torch::kFloat32));
             tracing_params.grad_xyz = reinterpret_cast<float3 *>(grad_xyz.data_ptr());
             tracing_params.grad_opacity = reinterpret_cast<float*>(grad_opacity.data_ptr());
             tracing_params.grad_resp = reinterpret_cast<float*>(grad_resp.data_ptr());
@@ -95,6 +99,7 @@ struct PyGaussiansTracer {
             tracing_params.grad_scale = reinterpret_cast<float3*>(grad_scale.data_ptr());
             tracing_params.grad_rotation = reinterpret_cast<float4*>(grad_rot.data_ptr());
             tracing_params.grad_color = reinterpret_cast<float3*>(grad_color.data_ptr());
+            tracing_params.grad_invRS = reinterpret_cast<Matrix3x3*>(grad_invRS.data_ptr());
         }
         tracer->trace_rays(tracing_params);
 
@@ -112,7 +117,8 @@ struct PyGaussiansTracer {
                         "grad_scale"_a = grad_scale,
                         "grad_rot"_a = grad_rot,
                         "grad_resp"_a = grad_resp,
-                        "grad_color"_a = grad_color
+                        "grad_color"_a = grad_color,
+                        "grad_invRS"_a = grad_invRS
                         );
     }
 

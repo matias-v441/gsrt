@@ -1,3 +1,5 @@
+#include "utils/Matrix.h"
+
 struct Params {
     const float3* ray_origins;
     const float3* ray_directions;
@@ -34,6 +36,7 @@ struct Params {
     float* grad_opacity;
     float3* grad_sh;
     float3* grad_color;
+    util::Matrix3x3* grad_invRS;
 
     float* grad_resp;
 
