@@ -36,8 +36,9 @@ __device__ void compute_radiance(unsigned int gs_id, const float3 &ray_origin,
         return;
     }
     //const float3 dir = -ray_direction;
-    const float3 mu = params.gs_xyz[gs_id];
-    const float3 dir = normalize(mu-ray_origin);
+    const float3 dir = ray_direction;
+    //const float3 mu = params.gs_xyz[gs_id];
+    //const float3 dir = normalize(mu-ray_origin);
 
     const float3* sh = params.gs_sh + gs_id*16;
 
@@ -98,7 +99,7 @@ __device__ __forceinline__ void atomicAdd_float3(float3 &acc, const float3 &val)
 //                      const glm::vec3* means, glm::vec3 campos, const float* shs,
 //                      const bool* clamped, const glm::vec3* dL_dcolor,
 //                      glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
-__device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin, 
+__device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin, const float3& ray_direction,
     const float3& dL_dcolor, float3& grad_xyz, const bool* clamped)
 {
     atomicAdd_float3(params.grad_color[gs_id], dL_dcolor);
@@ -108,8 +109,9 @@ __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin,
 	// same as forward -----
 
     //const float3 dir = -params.ray_directions[idx.x];
-    const float3 mu = params.gs_xyz[gs_id];
-    const float3 dir = normalize(mu-ray_origin);
+    //const float3 mu = params.gs_xyz[gs_id];
+    //const float3 dir = normalize(mu-ray_origin);
+    const float3 dir = ray_direction;
 
     const float3* sh = params.gs_sh + gs_id*16;
     const int deg = params.sh_deg;
@@ -319,7 +321,7 @@ __device__ void compute_response(
     //tmax = dot(og,dg)/(eps+dot(dg,dg));
     float3 c_samp = o+tmax*d;
     float3 v = inv_RS*(c_samp-mu);
-    resp = min(0.99f,opacity*exp(-dot(v,v)));
+    resp = min(0.99f,opacity*exp(-.5f*dot(v,v)));
     //resp = opacity*exp(-dot(v,v));
 }
 
@@ -397,7 +399,7 @@ __device__ __forceinline__ void add_grad_0(const Acc& acc, const float3& rad, co
     const float &opacity = params.gs_opacity[chit_id];
     
     float3 background{1.f,1.f,1.f};
-    const float3 dC_dresp = prev_acc_trans*(particle_rad-full_rad+acc_rad) - background*acc_full.transmittance/max(eps,1.f-resp);;
+    const float3 dC_dresp = prev_acc_trans*(particle_rad-full_rad+acc_rad); // - background*acc_full.transmittance/max(eps,1.f-resp);
     const float3 x = c_samp-pos;
     const float3 v = inv_RS*x;
     const float G = exp(-dot(v,v));
@@ -427,7 +429,7 @@ __device__ __forceinline__ void add_grad_0(const Acc& acc, const float3& rad, co
 
     // SH
     float3 sh_grad_xyz;
-    compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
+    compute_radiance_bwd(chit_id,ray_origin,ray_direction,dL_dcolor,sh_grad_xyz,clamped);
     grad_pos += sh_grad_xyz;
 
     atomicAdd_float3(params.grad_xyz[chit_id],grad_pos);
@@ -698,7 +700,7 @@ __device__ __forceinline__ void add_grad_I(const Acc& acc, const float3& rad, co
     const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
     const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
     float3 sh_grad_xyz;
-    compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
+    compute_radiance_bwd(chit_id,ray_origin,ray_direction,dL_dcolor,sh_grad_xyz,clamped);
     //dL_dmu += sh_grad_xyz;
 
     atomicAdd_float3(params.grad_xyz[chit_id],dL_dmu);
@@ -742,7 +744,8 @@ __device__ __forceinline__ void add_grad_II(const Acc& acc, const float3& rad, c
     const float3 dL_dC = params.dL_dC[launch_id];
     const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
 
-    float3 background{1.f,1.f,1.f};
+    //float3 background{1.f,1.f,1.f};
+    float3 background{0.f,0.f,0.f};
     const float3 dC_dresp = acc.transmittance*rad - (acc_full.radiance - acc.radiance)/max(eps,1.f-resp)
                             - background*acc_full.transmittance/max(eps,1.f-resp);
     const float dL_dresp = dot(dL_dC,dC_dresp); 
@@ -783,12 +786,12 @@ __device__ __forceinline__ void add_grad_II(const Acc& acc, const float3& rad, c
     const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
     const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
     float3 sh_grad_xyz;
-    compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
+    compute_radiance_bwd(chit_id,ray_origin,ray_direction,dL_dcolor,sh_grad_xyz,clamped);
     //dL_dmu += sh_grad_xyz;
 }
 
 
-__device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, const Acc& acc_full,
+__device__ __forceinline__ void add_grad_III(const Acc& acc, const float3& rad, const Acc& acc_full,
                                         int chit_id, const float3& csamp,
                                         const float resp, 
                                         const float3 ray_origin,
@@ -886,10 +889,325 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
     const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
     const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
     float3 sh_grad_xyz;
-    compute_radiance_bwd(chit_id,ray_origin,dL_dcolor,sh_grad_xyz,clamped);
+    compute_radiance_bwd(chit_id,ray_origin,ray_direction,dL_dcolor,sh_grad_xyz,clamped);
     //dL_dmu += sh_grad_xyz;
 }
 
+using float33 = float3[3];
+
+static __device__ inline float3 operator*(const float33& m, const float3& p) {
+    return make_float3(
+        dot(make_float3(m[0].x, m[1].x, m[2].x), p),
+        dot(make_float3(m[0].y, m[1].y, m[2].y), p),
+        dot(make_float3(m[0].z, m[1].z, m[2].z), p));
+}
+
+static __device__ inline float3 operator*(const float3& p, const float33& m) {
+    return make_float3(dot(m[0], p), dot(m[1], p), dot(m[2], p));
+}
+
+static __device__ inline float3 matmul_bw_vec(const float33& m, const float3& gdt) {
+    return make_float3(
+        gdt.x * m[0].x + gdt.y * m[1].x + gdt.z * m[2].x,
+        gdt.x * m[0].y + gdt.y * m[1].y + gdt.z * m[2].y,
+        gdt.x * m[0].z + gdt.y * m[1].z + gdt.z * m[2].z);
+}
+
+
+static __device__ inline float4 matmul_bw_quat(const float3& p, const float3& g, const float4& q) {
+    float33 dmat;
+    dmat[0] = g.x * p;
+    dmat[1] = g.y * p;
+    dmat[2] = g.z * p;
+
+    const float r = q.x;
+    const float x = q.y;
+    const float y = q.z;
+    const float z = q.w;
+
+    float dr = 0;
+    float dx = 0;
+    float dy = 0;
+    float dz = 0;
+
+    // m[0] = make_float3((1.f - 2.f * (y * y + z * z)), 2.f * (x * y + r * z), 2.f * (x * z - r * y));
+
+    // m[0].x = (1.f - 2.f * (y * y + z * z))
+    dy += -4 * y * dmat[0].x;
+    dz += -4 * z * dmat[0].x;
+    // m[0].y = 2.f * (x * y + r * z)
+    dr += 2 * z * dmat[0].y;
+    dx += 2 * y * dmat[0].y;
+    dy += 2 * x * dmat[0].y;
+    dz += 2 * r * dmat[0].y;
+    // m[0].z = 2.f * (x * z - r * y)
+    dr += -2 * y * dmat[0].z;
+    dx += 2 * z * dmat[0].z;
+    dy += -2 * r * dmat[0].z;
+    dz += 2 * x * dmat[0].z;
+
+    // m[1] = make_float3(2.f * (x * y - r * z), (1.f - 2.f * (x * x + z * z)), 2.f * (y * z + r * x));
+
+    // m[1].x = 2.f * (x * y - r * z)
+    dr += -2 * z * dmat[1].x;
+    dx += 2 * y * dmat[1].x;
+    dy += 2 * x * dmat[1].x;
+    dz += -2 * r * dmat[1].x;
+    // m[1].y = (1.f - 2.f * (x * x + z * z))
+    dx += -4 * x * dmat[1].y;
+    dz += -4 * z * dmat[1].y;
+    // m[1].z = 2.f * (y * z + r * x))
+    dr += 2 * x * dmat[1].z;
+    dx += 2 * r * dmat[1].z;
+    dy += 2 * z * dmat[1].z;
+    dz += 2 * y * dmat[1].z;
+
+    // m[2] = make_float3(2.f * (x * z + r * y), 2.f * (y * z - r * x), (1.f - 2.f * (x * x + y * y)));
+
+    // m[2].x = 2.f * (x * z + r * y)
+    dr += 2 * y * dmat[2].x;
+    dx += 2 * z * dmat[2].x;
+    dy += 2 * r * dmat[2].x;
+    dz += 2 * x * dmat[2].x;
+    // m[2].y = 2.f * (y * z - r * x)
+    dr += -2 * x * dmat[2].y;
+    dx += -2 * r * dmat[2].y;
+    dy += 2 * z * dmat[2].y;
+    dz += 2 * y * dmat[2].y;
+    // m[2].z = (1.f - 2.f * (x * x + y * y))
+    dx += -4 * x * dmat[2].z;
+    dy += -4 * y * dmat[2].z;
+
+    return make_float4(dr, dx, dy, dz);
+}
+
+__device__ void rotationMatrixTranspose(const float4& q, float33& ret) {
+    const float r = q.x;
+    const float x = q.y;
+    const float y = q.z;
+    const float z = q.w;
+
+    const float xx = x * x;
+    const float yy = y * y;
+    const float zz = z * z;
+    const float xy = x * y;
+    const float xz = x * z;
+    const float yz = y * z;
+    const float rx = r * x;
+    const float ry = r * y;
+    const float rz = r * z;
+
+    // Compute rotation matrix from quaternion
+    ret[0] = make_float3((1.f - 2.f * (yy + zz)), 2.f * (xy + rz), 2.f * (xz - ry));
+    ret[1] = make_float3(2.f * (xy - rz), (1.f - 2.f * (xx + zz)), 2.f * (yz + rx));
+    ret[2] = make_float3(2.f * (xz + ry), 2.f * (yz - rx), (1.f - 2.f * (xx + yy)));
+}
+
+#include "math.h"
+
+static __device__ inline float3 safe_normalize(float3 v) {
+    const float l = v.x * v.x + v.y * v.y + v.z * v.z;
+    return l > 0.0f ? (v * rsqrtf(l)) : v;
+}
+
+static __device__ inline float3 safe_normalize_bw(const float3& v, const float3& d_out) {
+    const float l = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (l > 0.0f) {
+        const float il  = rsqrtf(l);
+        const float il3 = (il * il * il);
+        return il * d_out - il3 * make_float3(d_out.x * (v.x * v.x) + d_out.y * (v.y * v.x) + d_out.z * (v.z * v.x),
+                                              d_out.x * (v.x * v.y) + d_out.y * (v.y * v.y) + d_out.z * (v.z * v.y),
+                                              d_out.x * (v.x * v.z) + d_out.y * (v.y * v.z) + d_out.z * (v.z * v.z));
+    }
+    return make_float3(0);
+}
+
+__device__ inline void add_grad/*(
+    const float3& rayOrigin,
+    const float3& rayDirection,
+    int32_t particleIdx,
+    const ParticleDensity* particleDensityPtr,
+    ParticleDensity* particleDensityGradPtr,
+    const float* particleRadiancePtr,
+    float* particleRadianceGradPtr,
+    float minParticleKernelDensity,
+    float minParticleAlpha,
+    float minTransmittance,
+    int32_t sphEvalDegree,
+    float integratedTransmittance,
+    float& transmittance,
+    float transmittanceGrad,
+    float3 integratedRadiance,
+    float3& radiance,
+    float3 radianceGrad,
+    )*/(const Acc& acc, const float3& rad, const Acc& acc_full,
+                                        int chit_id, const float3& csamp,
+                                        const float resp, 
+                                        const float3 ray_origin,
+                                        const float3 ray_direction,
+                                        const bool* clamped
+                                        ) {
+
+    float3 particlePosition;
+    float3 gscl;
+    float33 particleInvRotation;
+    float particleDensity;
+    float4 grot;
+
+    float3 radianceGrad;
+
+    // {
+    //     const ParticleDensity particleData = particleDensityPtr[particleIdx];
+    //     particlePosition                   = particleData.position;
+    //     gscl                               = particleData.scale;
+    //     grot                               = particleData.quaternion;
+    //     rotationMatrixTranspose(grot, particleInvRotation);
+    //     particleDensity = particleData.density;
+    // }
+    {
+        grot = params.gs_rotation[chit_id];
+        gscl = params.gs_scaling[chit_id];
+        particlePosition = params.gs_xyz[chit_id];
+        particleDensity = params.gs_opacity[chit_id];
+        const uint3 launch_idxy = optixGetLaunchIndex();
+        const uint3 launch_dim = optixGetLaunchDimensions();
+        const int launch_id = launch_idxy.x + launch_idxy.y*launch_dim.x;
+        radianceGrad = params.dL_dC[launch_id];
+        rotationMatrixTranspose(grot, particleInvRotation);
+    }
+
+    // project ray in the gaussian
+    const float3 giscl   = make_float3(1 / gscl.x, 1 / gscl.y, 1 / gscl.z);
+    const float3 gposc   = (ray_origin - particlePosition);
+    const float3 gposcr  = (gposc * particleInvRotation);
+    const float3 gro     = giscl * gposcr;
+    const float3 rayDirR = ray_direction * particleInvRotation;
+    const float3 grdu    = giscl * rayDirR;
+    const float3 grd     = safe_normalize(grdu);
+    const float3 gcrod   = cross(grd, gro);
+    const float grayDist = dot(gcrod, gcrod);
+
+    const float gres   = expf(-0.5f*grayDist);//particleResponse<ParticleKernelDegree>(grayDist);
+    const float galpha = fminf(0.99f, gres * particleDensity);
+    // if(galpha != resp){
+    //     printf("resp %f\n",galpha-resp);
+    // }
+
+    //if ((gres > minParticleKernelDensity) && (galpha > minParticleAlpha))
+    {
+
+        const float weight = galpha * acc.transmittance;
+
+        const float nextTransmit = (1 - galpha) * acc.transmittance;
+
+
+        // float3 sphCoefficients[SPH_MAX_NUM_COEFFS];
+        // fetchParticleSphCoefficients(
+        //     particleIdx,
+        //     particleRadiancePtr,
+        //     &sphCoefficients[0]);
+        // const float3 grad = radianceFromSpHBwd(sphEvalDegree, &sphCoefficients[0], rayDirection, weight, radianceGrad, (float3*)&particleRadianceGradPtr[particleIdx * SPH_MAX_NUM_COEFFS * 3]);
+        //const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
+        const float3 dL_dcolor = radianceGrad *weight;//radianceGrad * dC_dcolor_diag;
+        float3 sh_grad_xyz;
+        compute_radiance_bwd(chit_id,ray_origin,ray_direction,dL_dcolor,sh_grad_xyz,clamped);
+        // if (sh_grad_xyz.x != 0.f || sh_grad_xyz.y != 0.f || sh_grad_xyz.z != 0.f)
+        //     printf("sh_grad_xyz %f %f %f\n",sh_grad_xyz.x, sh_grad_xyz.y, sh_grad_xyz.z);
+
+        const float3 grad = rad;
+
+        // >>> rayRadiance = accumulatedRayRad + weigth * rayRad + (1-galpha)*transmit * residualRayRad
+        const float3 rayRad = weight * grad;
+        
+        const float3 residualRayRad = fmaxf((nextTransmit <= 0.001 ? make_float3(0) : (acc_full.radiance - acc.radiance) / nextTransmit),
+                                            make_float3(0));
+
+        atomicAdd(
+            &params.grad_opacity[chit_id],
+            gres * (/*galphaRayHitGrd + galphaRayDnsGrd +*/ acc.transmittance * (grad.x - residualRayRad.x) * radianceGrad.x +
+                    acc.transmittance * (grad.y - residualRayRad.y) * radianceGrad.y +
+                    acc.transmittance * (grad.z - residualRayRad.z) * radianceGrad.z));
+
+        const float gresGrd =
+            particleDensity * (/*galphaRayHitGrd +  galphaRayDnsGrd +*/ acc.transmittance * (grad.x - residualRayRad.x) * radianceGrad.x +
+                               acc.transmittance * (grad.y - residualRayRad.y) * radianceGrad.y +
+                               acc.transmittance * (grad.z - residualRayRad.z) * radianceGrad.z);
+
+        const float grayDistGrd = -0.5f*gres*gresGrd;//particleResponseGrd<PARTICLE_KERNEL_DEGREE>(grayDist, gres, gresGrd);
+
+        float3 grdGrd, groGrd;
+        {
+            const float3 gcrod = cross(grd, gro);
+
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            // ---> grayDist = dot(gcrod, gcrod)
+            //               = gcrod.x^2 + gcrod.y^2 + gcrod.z^2
+            // ===> d_grayDist / d_gcrod = 2*gcrod
+            const float3 gcrodGrd = 2 * gcrod * grayDistGrd;
+
+            // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+            // ---> gcrod = cross(grd, gro)
+            // ---> gcrod.x = grd.y * gro.z - grd.z * gro.y
+            // ---> gcrod.y = grd.z * gro.x - grd.x * gro.z
+            // ---> gcrod.z = grd.x * gro.y - grd.y * gro.x
+            grdGrd = make_float3(gcrodGrd.z * gro.y - gcrodGrd.y * gro.z,
+                                 gcrodGrd.x * gro.z - gcrodGrd.z * gro.x,
+                                 gcrodGrd.y * gro.x - gcrodGrd.x * gro.y);
+            groGrd = make_float3(gcrodGrd.y * grd.z - gcrodGrd.z * grd.y,
+                                 gcrodGrd.z * grd.x - gcrodGrd.x * grd.z,
+                                 gcrodGrd.x * grd.y - gcrodGrd.y * grd.x);
+            //groGrd *= 0.f;
+        }
+
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // ---> gro = (1/gscl)*gposcr
+        // ===> d_gro / d_gscl = -gposcr/(gscl*gscl)
+        // ===> d_gro / d_gposcr = (1/gscl)
+        const float3 gsclGrdGro = make_float3((-gposcr.x / (gscl.x * gscl.x)),
+                                              (-gposcr.y / (gscl.y * gscl.y)),
+                                              (-gposcr.z / (gscl.z * gscl.z))) *
+                                  (groGrd/* + groRayHitGrd*/);
+        const float3 gposcrGrd = giscl * (groGrd/* + groRayHitGrd*/);
+
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // ---> gposcr = matmul(gposc, grotMat)
+        // ===> d_gposcr / d_gposc = matmul_bw_vec(grotMat)
+        // ===> d_gposcr / d_grotmat = matmul_bw_mat(gposc)
+        const float3 gposcGrd     = matmul_bw_vec(particleInvRotation, gposcrGrd);
+        const float4 grotGrdPoscr = matmul_bw_quat(gposc, gposcrGrd, grot);
+
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // ---> gposc = rayOri - gpos
+        // ===> d_gposc / d_gpos = -1
+        const float3 rayMoGPosGrd = -gposcGrd;
+        atomicAdd(&params.grad_xyz[chit_id].x, rayMoGPosGrd.x);
+        atomicAdd(&params.grad_xyz[chit_id].y, rayMoGPosGrd.y);
+        atomicAdd(&params.grad_xyz[chit_id].z, rayMoGPosGrd.z);
+
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // ---> grd = safe_normalize(grdu)
+        // ===> d_grd / d_grdu = safe_normalize_bw(grd)
+        const float3 grduGrd = safe_normalize_bw(grdu, grdGrd /* + grdRayHitGrd*/);
+
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // ---> grdu = (1/gscl)*rayDirR
+        // ===> d_grdu / d_gscl = -rayDirR/(gscl*gscl)
+        // ===> d_grdu / d_rayDirR = (1/gscl)
+        atomicAdd(&params.grad_scale[chit_id].x, /*gsclRayHitGrd.x +*/ gsclGrdGro.x + (-rayDirR.x / (gscl.x * gscl.x)) * grduGrd.x);
+        atomicAdd(&params.grad_scale[chit_id].y, /*gsclRayHitGrd.y +*/ gsclGrdGro.y + (-rayDirR.y / (gscl.y * gscl.y)) * grduGrd.y);
+        atomicAdd(&params.grad_scale[chit_id].z, /*gsclRayHitGrd.z +*/ gsclGrdGro.z + (-rayDirR.z / (gscl.z * gscl.z)) * grduGrd.z);
+        const float3 rayDirRGrd = giscl * grduGrd;
+
+        // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        // ---> rayDirR = matmul(rayDir, grotMat)
+        // ===> d_rayDirR / d_grotmat = matmul_bw_mat(rayDir, grotMat)
+        const float4 grotGrdRayDirR = matmul_bw_quat(ray_direction, rayDirRGrd, grot);
+        atomicAdd(&params.grad_rotation[chit_id].x, grotGrdPoscr.x + grotGrdRayDirR.x);
+        atomicAdd(&params.grad_rotation[chit_id].y, grotGrdPoscr.y + grotGrdRayDirR.y);
+        atomicAdd(&params.grad_rotation[chit_id].z, grotGrdPoscr.z + grotGrdRayDirR.z);
+        atomicAdd(&params.grad_rotation[chit_id].w, grotGrdPoscr.w + grotGrdRayDirR.w);
+    }
+}
 
 constexpr int chunk_size = 1024;
 
@@ -996,7 +1314,7 @@ extern "C" __global__ void __raygen__rg() {
 
             float3 pos = ray_origin+ray_direction*chit.thit;
             compute_radiance(chit.id,ray_origin,ray_direction,rad,clamped);
-            acc_bwd.radiance += rad*chit.resp*acc.transmittance;
+            acc_bwd.radiance += rad*chit.resp*acc_bwd.transmittance;
             add_grad(acc_bwd,rad,acc,chit.id,
                 ray_origin+ray_direction*chit.thit,
                 chit.resp, ray_origin, ray_direction, clamped);

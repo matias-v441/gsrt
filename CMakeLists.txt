@@ -119,10 +119,10 @@ set_target_properties(gsrt_cpp_extension
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
-add_executable(test_cpp test.cpp src/gaussians_tracer.cpp ${gaussians_tracer_ptx})
-target_include_directories(test_cpp PRIVATE src)
-#target_link_libraries(test_cpp PRIVATE ${LIBCNPY})
-target_link_libraries(test_cpp PRIVATE cnpy)
-target_link_libraries(test_cpp PRIVATE ${CUDA_LIBRARIES} ${TORCH_LIBRARIES})
-target_link_libraries(test_cpp PRIVATE CGAL::CGAL)
-target_compile_features(test_cpp PRIVATE cxx_std_17)
+# add_executable(test_cpp test.cpp src/gaussians_tracer.cpp ${gaussians_tracer_ptx})
+# target_include_directories(test_cpp PRIVATE src)
+# #target_link_libraries(test_cpp PRIVATE ${LIBCNPY})
+# target_link_libraries(test_cpp PRIVATE cnpy)
+# target_link_libraries(test_cpp PRIVATE ${CUDA_LIBRARIES} ${TORCH_LIBRARIES})
+# target_link_libraries(test_cpp PRIVATE CGAL::CGAL)
+# target_compile_features(test_cpp PRIVATE cxx_std_17)

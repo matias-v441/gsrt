@@ -58,12 +58,14 @@ print(train_dataset['metadata'])
 presets, config_overrides = get_presets_and_config_overrides(
     method_spec, train_dataset["metadata"])
 
-chpt_iter = 1000
-use_chpt = False
-config_overrides["_3dgs_data"] = False
+chpt_iter = 1
+use_chpt = True
+config_overrides["3dgs_data"] = False
+config_overrides["3dgrt_data"] = True
 if use_chpt:
     model = method_cls(
-        checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
+        #checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
+        checkpoint=f'lego_3dgrt/lego-2403_124950/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         train_dataset=train_dataset,
         config_overrides=config_overrides,
     )
@@ -118,6 +120,11 @@ if track:
         }
     )
 
+from nerfbaselines.viewer import Viewer
+
+from contextlib import ExitStack
+
+
 # vp_id = 0
 # ref_img = wandb.Image(train_dataset['images'][vp_id][:,:,:3])
 # ref_img_alpha = wandb.Image(train_dataset['images'][vp_id][:,:,3][:,:,None])
@@ -127,6 +134,17 @@ if track:
 #             })
 
 model.training_setup()
+
+stack = ExitStack()
+viewer = stack.enter_context(Viewer(
+                #train_dataset=train_dataset, 
+                #test_dataset=test_dataset, 
+                model=model))
+
+import threading
+tviewer = threading.Thread(target=viewer.run)
+tviewer.start()
+
 
 #with tqdm(total=model_info["num_iterations"]) as pbar:
 for step in range(start_iteration,model_info["num_iterations"]):
@@ -150,7 +168,7 @@ for step in range(start_iteration,model_info["num_iterations"]):
                  'N':metrics["densif_stats"]["total"]
                  }
     
-    if (step >= 0 and step%100==0) and metrics["out_image"] is not None:# or step < 10:
+    if (step >= 0 and step%300==0) and metrics["out_image"] is not None:# or step < 10:
         wandb_log['image'] = wandb.Image(metrics['out_image']/np.max(metrics['out_image']))
     
     if track:
@@ -166,3 +184,5 @@ with open("nb-info.json", "w") as f:
 
 # Close the stack. In real code, you should use the context manager
 #stack.close()
+
+tviewer.join()

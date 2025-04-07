@@ -270,6 +270,8 @@ class _TraceFunction(torch.autograd.Function):
         grad_sh = out["grad_sh"]
         grad_color = out["grad_color"]
         grad_invRS = out["grad_invRS"]
+        print("grad_opacity", grad_opacity.max(), torch.count_nonzero(grad_opacity))
+        print("grad_scale", grad_scale.max(), torch.count_nonzero(grad_scale))
         for grad,n in [(grad_xyz,"grad_xyz"),
                        (grad_opacity,"grad_opacity"),
                        (grad_scale,"grad_scale"),
@@ -309,12 +311,14 @@ class GSRTMethod(Method):
         self.scene_extent = None
         if self.train_dataset is not None:
             self.scene_extent = 5.2 #self.train_dataset['metadata']['expected_scene_scale']
-        self._3dgs_data = config_overrides.get('_3dgs_data',False)
+        self._3dgs_data = config_overrides.get('3dgs_data',False)
         if self.checkpoint is None:
             scene_info = _convert_dataset_to_gaussian_splatting(train_dataset, "", True)
             self.initialize_for_blender(scene_info)
         elif self._3dgs_data:
             self.load_3dgs_checkpoint()
+        elif config_overrides.get('3dgrt_data',False):
+            self.load_3dgrt_checkpoint()
         else:
             self.load_checkpoint()
         self.spatial_lr_scale = 0
@@ -359,6 +363,7 @@ class GSRTMethod(Method):
         features[:, 3:, 1:] = 0.0
         self._features_dc = features[:,:,0:1].transpose(1, 2).contiguous()
         self._features_rest = features[:,:,1:].transpose(1, 2).contiguous()
+        print(f"FEATURES {self._features_dc.shape} {self._features_rest.shape}")
         # -------------------
 
         self._color = (torch.ones(n,3)*torch.tensor([0.,1.,0.])).cuda() 
@@ -379,6 +384,20 @@ class GSRTMethod(Method):
         self.active_sh_degree = ch['sh_deg']
         self.max_sh_degree = 3
         self._color = ch['color']
+        self._resp = torch.zeros_like(self._opacity)
+        
+
+    def load_3dgrt_checkpoint(self):
+        ch = torch.load(self.checkpoint)
+        self._xyz = ch['positions'].detach()
+        self._scaling = ch['scale'].detach()
+        self._rotation = ch['rotation'].detach()
+        self._opacity = ch['density'].detach()
+        self._features_dc = ch['features_albedo'].detach().reshape(self._xyz.shape[0],1,3) #torch.zeros((self._xyz.shape[0],1,3)).float().cuda()
+        self._features_rest = ch['features_specular'].detach().reshape(self._xyz.shape[0],15,3) #torch.zeros((self._xyz.shape[0],15,3)).float().cuda()
+        self.active_sh_degree = ch['n_active_features']
+        self.max_sh_degree = ch['max_n_features']
+        self._color = torch.zeros_like(self._xyz) #ch['color']
         self._resp = torch.zeros_like(self._opacity)
     
 
@@ -491,8 +510,8 @@ class GSRTMethod(Method):
 
     @property
     def get_rotation(self):
-        #return self.rotation_activation(self._rotation)
-        return self._rotation
+        return self.rotation_activation(self._rotation)
+        #return self._rotation
 
     @property
     def get_xyz(self):
@@ -695,7 +714,21 @@ class GSRTMethod(Method):
         pos_grad_norm = torch.norm(self._xyz.grad,dim=1,keepdim=True)#/dist*2
         self.xyz_gradient_accum += pos_grad_norm
         self.denom[pos_grad_norm != 0.] += 1
-        
+
+    @staticmethod 
+    def build_scaling_rotation(s, r):
+            L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
+            R = build_rotation(r)
+            L[:, :, 0] = R[:, :, 0] * s[:,0:1]
+            L[:, :, 1] = R[:, :, 1] * s[:,1:2]
+            L[:, :, 2] = R[:, :, 2] * s[:,2:3]
+
+            # L[:,0,0] = s[:,0]
+            # L[:,1,1] = s[:,1]
+            # L[:,2,2] = s[:,2]
+
+            # L = R @ L
+            return L
 
     def train_iteration(self, step: int) -> Dict[str, float]:
 
@@ -723,19 +756,29 @@ class GSRTMethod(Method):
         ray_origins = ray_origins.float().squeeze()
         ray_directions = ray_directions.float().squeeze()
 
+        use_batch = False
         batch = torch.randint(0,ray_origins.shape[1],(2**16,),device="cuda")
         batch_ray_origins = ray_origins[batch]
         batch_ray_directions = ray_directions[batch]
         batch_res_x = batch_res_y = 2**8
-
-        setup = {
-            'tracer':self.tracer,
-            'ray_origins':batch_ray_origins.contiguous(),
-            'ray_directions':batch_ray_directions.contiguous(),
-            'width':batch_res_x,
-            'height':batch_res_y,
-            'sh_deg':self.active_sh_degree
-        }
+        if use_batch:
+            setup = {
+                'tracer':self.tracer,
+                'ray_origins':batch_ray_origins.contiguous(),
+                'ray_directions':batch_ray_directions.contiguous(),
+                'width':batch_res_x,
+                'height':batch_res_y,
+                'sh_deg':self.active_sh_degree
+            }
+        else:
+            setup = {
+                'tracer':self.tracer,
+                'ray_origins':ray_origins.contiguous(),
+                'ray_directions':ray_directions.contiguous(),
+                'width':res_x,
+                'height':res_y,
+                'sh_deg':self.active_sh_degree
+            }
         white_background = False
         gt_image = torch.from_numpy(self.train_dataset['images'][vp_id])/255
         bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
@@ -749,51 +792,39 @@ class GSRTMethod(Method):
         retained_scaling = self.get_scaling
         retained_rotation = self.get_rotation
         retained_features = self.get_features
-        def build_scaling_rotation(s, r):
-            L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
-            R = build_rotation(r)
-            L[:, :, 0] = R[:, :, 0] * s[:,0:1]
-            L[:, :, 1] = R[:, :, 1] * s[:,1:2]
-            L[:, :, 2] = R[:, :, 2] * s[:,2:3]
-
-            # L[:,0,0] = s[:,0]
-            # L[:,1,1] = s[:,1]
-            # L[:,2,2] = s[:,2]
-
-            # L = R @ L
-            return L
-        inv_RS = build_scaling_rotation(1 / self.get_scaling, self._rotation).transpose(-1,-2).contiguous()
+        
+        inv_RS = self.build_scaling_rotation(1 / self.get_scaling, self._rotation).transpose(-1,-2).contiguous()
         inv_RS.retain_grad()
         image = trace_function(setup, retained_opacity, self._xyz, 
                                    retained_scaling, retained_rotation,
                                    retained_features,
                                    self._color,self._resp,inv_RS)
-        if iteration % 300 == 0:
-            with torch.no_grad():
-                setup = {
-                    'tracer':self.tracer,
-                    'ray_origins':ray_origins.contiguous(),
-                    'ray_directions':ray_directions.contiguous(),
-                    'width':res_x,
-                    'height':res_y,
-                    'sh_deg':self.active_sh_degree
-                }
-                out_image = trace_function(setup, retained_opacity, self._xyz, 
-                                   retained_scaling, retained_rotation,
-                                   retained_features,
-                                   self._color,self._resp,inv_RS)
-                import matplotlib.pyplot as plt
-                plt.figure()
-                plt.imshow(out_image.detach().cpu().reshape(res_x,res_y,3).numpy())
-                plt.figure()
-                plt.imshow(gt_image.detach().cpu().reshape(res_x,res_y,3).numpy())
-                plt.show()
+        # if (iteration-1) % 300 == 0:
+        #     with torch.no_grad():
+        #         setup = {
+        #             'tracer':self.tracer,
+        #             'ray_origins':ray_origins.contiguous(),
+        #             'ray_directions':ray_directions.contiguous(),
+        #             'width':res_x,
+        #             'height':res_y,
+        #             'sh_deg':self.active_sh_degree
+        #         }
+        #         out_image = trace_function(setup, retained_opacity, self._xyz, 
+        #                            retained_scaling, retained_rotation,
+        #                            retained_features,
+        #                            self._color,self._resp,inv_RS)
+        #         import matplotlib.pyplot as plt
+        #         plt.figure()
+        #         plt.imshow(out_image.detach().cpu().reshape(res_x,res_y,3).numpy())
+        #         plt.figure()
+        #         plt.imshow(gt_image.detach().cpu().reshape(res_x,res_y,3).numpy())
+        #         plt.show()
 
-        Ll1 = l1_loss(image, batch_gt_image)
-        # ssim_value = ssim(image.reshape(1,res_y,res_x,3).permute(0,3,1,2), 
-        #                   gt_image.reshape(1,res_y,res_x,3).permute(0,3,1,2))
-        # loss = (1.0 - self.lambda_dssim) * Ll1 + self.lambda_dssim * (1.0 - ssim_value)
-        loss = Ll1
+        Ll1 = l1_loss(image, batch_gt_image if use_batch else gt_image) 
+        ssim_value = ssim(image.reshape(1,res_y,res_x,3).permute(0,3,1,2), 
+                          gt_image.reshape(1,res_y,res_x,3).permute(0,3,1,2))
+        loss = (1.0 - self.lambda_dssim) * Ll1 + self.lambda_dssim * (1.0 - ssim_value)
+        #loss = Ll1
         loss.backward()
 
         print("resp_grad:",self._resp.grad.max().values)
@@ -832,7 +863,7 @@ class GSRTMethod(Method):
 
         
         return {"loss":loss.detach().item(),"vp_id":vp_id,
-                "out_image": None,#image.detach().cpu().reshape(res_y,res_x,3).numpy(),
+                "out_image": image.detach().cpu().reshape(res_y,res_x,3).numpy(),
                 "densif_stats":self.densif_stats,
                 "pos_grad_norm":pos_grad_norm.cpu().numpy(),
                 "resp_grad":resp_grad.squeeze().cpu().numpy()}
@@ -849,32 +880,54 @@ class GSRTMethod(Method):
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
         res_x, res_y = camera_th.image_sizes
 
-        time_ms = 0
-        nit = 1 if options is None else options.get('num_avg_it',1)
-        for i in range(nit):
-            res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
-                                         ray_directions.float().squeeze(0).contiguous(),
-                                         res_x, res_y,
-                                         False,torch.tensor(0.))
-            time_ms += res["time_ms"]
-        time_ms /= nit
-        
-        color = res["radiance"].cpu().reshape(res_y,res_x,3).numpy()
-        transmittance = res["transmittance"].cpu().reshape(res_y,res_x)[:,:,None].repeat(1,1,3).numpy()
-        debug_map_0 = res["debug_map_0"].cpu().reshape(res_x,res_y,3).numpy()
-        debug_map_1 = res["debug_map_1"].cpu().reshape(res_x,res_y,3).numpy()
-        time_ms = res["time_ms"]
-        num_its = res["num_its"]
-        
-        return {
-            "color": color,# + transmittance,
-            "transmittance": transmittance,
-            "debug_map_0": debug_map_0,
-            "debug_map_1": debug_map_1,
-            "time_ms": time_ms,
-            "num_its": num_its,
-            "res_xy": (res_x,res_y) 
+        setup = {
+            'tracer':self.tracer,
+            'ray_origins':ray_origins.contiguous(),
+            'ray_directions':ray_directions.contiguous(),
+            'width':res_x,
+            'height':res_y,
+            'sh_deg':self.active_sh_degree
         }
+        retained_opacity = self.get_opacity
+        retained_scaling = self.get_scaling
+        retained_rotation = self.get_rotation
+        retained_features = self.get_features
+        inv_RS = self.build_scaling_rotation(1 / self.get_scaling, self._rotation).transpose(-1,-2).contiguous()
+        #inv_RS.retain_grad()
+        out_image = trace_function(setup, retained_opacity, self._xyz, 
+                            retained_scaling, retained_rotation,
+                            retained_features,
+                            self._color,self._resp,inv_RS)
+        
+        color = out_image.detach().cpu().reshape(res_y,res_x,3).numpy()
+        return {"color":color}
+
+        # time_ms = 0
+        # nit = 1 if options is None else options.get('num_avg_it',1)
+        # for i in range(nit):
+        #     res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
+        #                                  ray_directions.float().squeeze(0).contiguous(),
+        #                                  res_x, res_y,
+        #                                  False,torch.tensor(0.))
+        #     time_ms += res["time_ms"]
+        # time_ms /= nit
+        # 
+        # color = res["radiance"].cpu().reshape(res_y,res_x,3).numpy()
+        # transmittance = res["transmittance"].cpu().reshape(res_y,res_x)[:,:,None].repeat(1,1,3).numpy()
+        # debug_map_0 = res["debug_map_0"].cpu().reshape(res_x,res_y,3).numpy()
+        # debug_map_1 = res["debug_map_1"].cpu().reshape(res_x,res_y,3).numpy()
+        # time_ms = res["time_ms"]
+        # num_its = res["num_its"]
+        # 
+        # return {
+        #     "color": color,# + transmittance,
+        #     "transmittance": transmittance,
+        #     "debug_map_0": debug_map_0,
+        #     "debug_map_1": debug_map_1,
+        #     "time_ms": time_ms,
+        #     "num_its": num_its,
+        #     "res_xy": (res_x,res_y) 
+        # }
 
     
     def save(self, path, it):
@@ -887,6 +940,26 @@ class GSRTMethod(Method):
                     'color':self._color.detach(),
                     'sh_deg':self.active_sh_degree
                     },f'{path}/checkpoint_{it}.pt')
+        
+    def get_data(self):
+        return (self._xyz.detach(),
+                self._features_dc.detach(),
+                self._features_rest.detach(),
+                self._opacity.detach(),
+                self._scaling.detach(),
+                self._rotation.detach(),
+                self._color.detach(),
+                self.active_sh_degree)
+
+    def set_data(self,data):
+            (self._xyz,
+            self._features_dc,
+            self._features_rest,
+            self._opacity,
+            self._scaling,
+            self._rotation,
+            self._color,
+            self.active_sh_degree) = data
 
 
     @classmethod

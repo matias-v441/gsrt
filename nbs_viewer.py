@@ -22,11 +22,11 @@ test_dataset = load_dataset("external://blender/lego",
 import sys
 
 model = GSRTMethod(
-    checkpoint=f"data/lego/checkpoint/chkpnt-30000.pth",
+    #checkpoint=f"data/lego/checkpoint/chkpnt-30000.pth",
     #checkpoint=f'gsrt_checkpoint/checkpoint_{sys.argv[1]}.pt',
-    config_overrides={'_3dgs_data':True}
+    #config_overrides={'_3dgs_data':True}
     )
-model.rendering_setup()
+#model.rendering_setup()
 
 viewer = stack.enter_context(Viewer(
     train_dataset=train_dataset, 

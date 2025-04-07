@@ -102,7 +102,7 @@ res_x,res_y = 800,800
 w,h = 800,800
 num_rays = res_x*res_y
 x,y=torch.meshgrid(torch.linspace(-w/2,w/2,res_x),torch.linspace(-h/2,h/2,res_y))
-from cameras import cameras
+from early_test_scripts.cameras import cameras
 from math import sin, cos, radians
 
 focus = 1250.
@@ -256,7 +256,7 @@ tracer.load_gaussians(gs_xyz.cpu(),gs_rotation.cpu(),gs_scaling.cpu(),gs_opacity
 #                           [0.0, 0.7341100573539734, -0.67903071641922],
 #                           [-0.0, -0.67903071641922, -0.7341099977493286]],
 #                "fy": 1250.0000504168488, "fx": 1250.0000504168488}
-from cameras import cameras
+from early_test_scripts.cameras import cameras
 for cam_data in cameras[:10]:
     T = torch.tensor(cam_data["position"])
     R = torch.tensor(cam_data["rotation"])
