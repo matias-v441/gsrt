@@ -47,14 +47,23 @@ struct PyGaussiansTracer {
                         const torch::Tensor &ray_directions,
                         int width, int height,
                         bool compute_grad,
-                        const torch::Tensor &dL_dC) {
+                        const torch::Tensor &dL_dC,
+                        const torch::Tensor &out_rad,
+                        const torch::Tensor &out_trans
+                    ) {
 
         torch::AutoGradMode enable_grad(false);
         CHECK_FLOAT_DIM(ray_origins,3);
         CHECK_FLOAT_DIM(ray_directions,3);
         const size_t num_rays = ray_origins.numel() / 3;
-        const auto radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
-        const auto transmittance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
+        torch::Tensor radiance,transmittance;
+        if(compute_grad){
+            radiance = out_rad;
+            transmittance = out_trans;
+        }else{
+            radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
+            transmittance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
+        }
 
         const auto debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
         const auto debug_map_1 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));

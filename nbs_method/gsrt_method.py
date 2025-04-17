@@ -44,6 +44,10 @@ from simple_knn._C import distCUDA2
 
 from extension import GaussiansTracer
 
+
+import lovely_tensors as lt
+lt.monkey_patch()
+
 def flatten_hparams(hparams, *, separator: str = "/", _prefix: str = ""):
     flat = {}
     if dataclasses.is_dataclass(hparams):
@@ -252,17 +256,19 @@ class _TraceFunction(torch.autograd.Function):
         tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,setup['sh_deg'],part_color)
         out = tracer.trace_rays(setup['ray_origins'],setup['ray_directions'],
                                 setup['width'],setup['height'],
-                                False,torch.tensor(0))
+                                False,torch.tensor(0),torch.tensor(0),torch.tensor(0))
         ctx.setup = setup
+        ctx.save_for_backward(out["radiance"],out["transmittance"])
         return out["radiance"]# + out["transmittance"][:,None]
 
     @staticmethod
     def backward(ctx, *grad_outputs):
         dout_dC = grad_outputs[0]
         setup = ctx.setup
+        out_rad,out_trans = ctx.saved_tensors
         out = setup['tracer'].trace_rays(setup['ray_origins'],setup['ray_directions'],
                                          setup['width'],setup['height'],
-                                         True,dout_dC)
+                                         True,dout_dC,out_rad,out_trans)
         grad_xyz = out["grad_xyz"]
         grad_opacity = out["grad_opacity"][:,None]
         grad_scale = out["grad_scale"]
@@ -270,8 +276,6 @@ class _TraceFunction(torch.autograd.Function):
         grad_sh = out["grad_sh"]
         grad_color = out["grad_color"]
         grad_invRS = out["grad_invRS"]
-        print("grad_opacity", grad_opacity.max(), torch.count_nonzero(grad_opacity))
-        print("grad_scale", grad_scale.max(), torch.count_nonzero(grad_scale))
         for grad,n in [(grad_xyz,"grad_xyz"),
                        (grad_opacity,"grad_opacity"),
                        (grad_scale,"grad_scale"),
@@ -399,6 +403,7 @@ class GSRTMethod(Method):
         self.max_sh_degree = ch['max_n_features']
         self._color = torch.zeros_like(self._xyz) #ch['color']
         self._resp = torch.zeros_like(self._opacity)
+        self.ref_grads = torch.load(self.checkpoint.replace(".pt","_grad.pt"))
     
 
     def load_3dgs_checkpoint(self):
@@ -459,7 +464,7 @@ class GSRTMethod(Method):
         position_lr_delay_mult = 0.01
         position_lr_max_steps = 30_000
         self.feature_lr = 0.0025
-        opacity_lr = 0.025
+        opacity_lr = 0.05
         scaling_lr = 0.005
         rotation_lr = 0.001
 
@@ -711,7 +716,7 @@ class GSRTMethod(Method):
 
     def add_densification_stats(self, origin):
         dist = torch.norm(self._xyz - origin, dim=1, keepdim=True)
-        pos_grad_norm = torch.norm(self._xyz.grad,dim=1,keepdim=True)#/dist*2
+        pos_grad_norm = torch.norm(self._xyz.grad,dim=1,keepdim=True)*dist/2
         self.xyz_gradient_accum += pos_grad_norm
         self.denom[pos_grad_norm != 0.] += 1
 
@@ -751,6 +756,16 @@ class GSRTMethod(Method):
         cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
         camera_th = cameras_th.__getitem__(vp_id)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
+
+        # ray_origins = self.ref_grads["ray_origins"].squeeze(0).cpu().reshape(640000,3)
+        # ray_directions = self.ref_grads["ray_directions"].squeeze(0).cpu().reshape(640000,3)
+        # ray_to_world = self.ref_grads["ray_to_world"].cpu().squeeze(0)
+        # ray_origins = torch.hstack([ray_origins,torch.ones(640000,1)]) @ ray_to_world.T
+        # ray_directions = torch.hstack([ray_directions,torch.zeros(640000,1)]) @ ray_to_world.T
+        # ray_origins = ray_origins.unsqueeze(0).cuda()
+        # ray_directions = ray_directions.unsqueeze(0).cuda()
+        # res_x, res_y = 800,800 #camera_th.image_sizes
+
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
         res_x, res_y = camera_th.image_sizes
         ray_origins = ray_origins.float().squeeze()
@@ -785,6 +800,7 @@ class GSRTMethod(Method):
         gt_image_alpha = gt_image[:, :, 3:4]
         gt_image = gt_image[:, :, :3]*gt_image_alpha + (1 - gt_image_alpha)*bg
         gt_image = gt_image[:,:,:3]
+        # gt_image = self.ref_grads["ref_rgb"].squeeze(0)
         gt_image = gt_image.float().reshape(res_x*res_y,3).cuda()
         batch_gt_image = gt_image[batch]
         
@@ -819,6 +835,12 @@ class GSRTMethod(Method):
         #         plt.figure()
         #         plt.imshow(gt_image.detach().cpu().reshape(res_x,res_y,3).numpy())
         #         plt.show()
+        # import matplotlib.pyplot as plt
+        # plt.figure()
+        # plt.imshow(image.detach().cpu().reshape(res_x,res_y,3).numpy())
+        # plt.figure()
+        # plt.imshow(gt_image.detach().cpu().reshape(res_x,res_y,3).numpy())
+        # plt.show()
 
         Ll1 = l1_loss(image, batch_gt_image if use_batch else gt_image) 
         ssim_value = ssim(image.reshape(1,res_y,res_x,3).permute(0,3,1,2), 
@@ -827,12 +849,29 @@ class GSRTMethod(Method):
         #loss = Ll1
         loss.backward()
 
-        print("resp_grad:",self._resp.grad.max().values)
-        print("inv_RS grad:",None if inv_RS.grad is None else inv_RS.grad.max(dim=0).values)
-        print("rotation grad:",None if self._rotation.grad is None else self._rotation.grad.max(dim=0).values)
-        print("scaling grad:",None if self._scaling.grad is None else self._scaling.grad.max(dim=0).values)
+        # print("resp_grad:",self._resp.grad.max().values)
+        # print("inv_RS grad:",None if inv_RS.grad is None else inv_RS.grad.max(dim=0).values)
+        # print("rotation grad:",None if self._rotation.grad is None else self._rotation.grad.max(dim=0).values)
+        # print("scaling grad:",None if self._scaling.grad is None else self._scaling.grad.max(dim=0).values)
 
         with torch.no_grad():
+
+            # print("opacity", torch.abs(self._opacity.grad - self.ref_grads["density_grad"]))
+            # print(self._opacity.grad)
+            # print(self.ref_grads["density_grad"])
+            # print("xyz", torch.norm(self._xyz.grad - self.ref_grads["positions_grad"], dim=1))
+            # print(self._xyz.grad)
+            # print(self.ref_grads["positions_grad"])
+            # print("rotation", torch.norm(self._rotation.grad - self.ref_grads["rotation_grad"], dim=1))
+            # print(self._rotation.grad)
+            # print(self.ref_grads["rotation_grad"])
+            # print("scaling", torch.norm(self._scaling.grad - self.ref_grads["scale_grad"], dim=1))
+            # print(self._scaling.grad)
+            # print(self.ref_grads["scale_grad"])
+            # assert(torch.allclose(self._opacity.grad, self.ref_grads["density_grad"],atol=1e-4))
+            # assert(torch.allclose(self._xyz.grad, self.ref_grads["positions_grad"],atol=1e-4))
+            # assert(torch.allclose(self._rotation.grad, self.ref_grads["rotation_grad"],atol=1e-4))
+            # assert(torch.allclose(self._scaling.grad, self.ref_grads["scale_grad"],atol=1e-4))
 
             # Log
             # if iteration % 10 == 0:

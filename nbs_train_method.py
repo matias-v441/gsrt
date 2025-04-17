@@ -64,8 +64,9 @@ config_overrides["3dgs_data"] = False
 config_overrides["3dgrt_data"] = True
 if use_chpt:
     model = method_cls(
-        #checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
-        checkpoint=f'lego_3dgrt/lego-2403_124950/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
+        #checkpoint=f'gsrt_checkpoint_1/checkpoint_{chpt_iter}.pt',
+        #checkpoint=f'lego_3dgrt/lego-0804_235516/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
+        checkpoint=f'lego_3dgrt/lego-1604_164539/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         train_dataset=train_dataset,
         config_overrides=config_overrides,
     )
@@ -106,7 +107,7 @@ start_iteration = chpt_iter if use_chpt else 0
 import wandb
 import numpy as np
 
-track = False
+track = True
 
 if track:
     wandb.init(
@@ -141,9 +142,13 @@ viewer = stack.enter_context(Viewer(
                 #test_dataset=test_dataset, 
                 model=model))
 
-import threading
-tviewer = threading.Thread(target=viewer.run)
-tviewer.start()
+view_async = True
+if view_async:
+    import threading
+    tviewer = threading.Thread(target=viewer.run)
+    tviewer.start()
+else:
+    viewer.run()
 
 
 #with tqdm(total=model_info["num_iterations"]) as pbar:

@@ -183,6 +183,7 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
 #endif
         pipeline_compile_options.pipelineLaunchParamsVariableName = "params";
         pipeline_compile_options.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE;
+        pipeline_compile_options.usesPrimitiveTypeFlags |= OPTIX_PRIMITIVE_TYPE_FLAGS_CUSTOM;
 
         std::string input = TraceRaysPipeline::load_ptx_data();
         size_t sizeof_log = sizeof(log);
@@ -254,8 +255,10 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
         hitgroup_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
         hitgroup_prog_group_desc.hitgroup.moduleCH = nullptr;
         hitgroup_prog_group_desc.hitgroup.moduleAH = module;
+        //hitgroup_prog_group_desc.hitgroup.moduleIS = module;
         hitgroup_prog_group_desc.hitgroup.entryFunctionNameCH = nullptr;
         hitgroup_prog_group_desc.hitgroup.entryFunctionNameAH = "__anyhit__fwd";
+        //hitgroup_prog_group_desc.hitgroup.entryFunctionNameIS = "__intersection__is";
         sizeof_log = sizeof(log);
         OPTIX_CHECK_LOG(optixProgramGroupCreate(
             context,
@@ -272,8 +275,10 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
         bwd_hitgroup_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
         bwd_hitgroup_prog_group_desc.hitgroup.moduleCH = nullptr;
         bwd_hitgroup_prog_group_desc.hitgroup.moduleAH = module;
+        //bwd_hitgroup_prog_group_desc.hitgroup.moduleIS = module;
         bwd_hitgroup_prog_group_desc.hitgroup.entryFunctionNameCH = nullptr;
         bwd_hitgroup_prog_group_desc.hitgroup.entryFunctionNameAH = "__anyhit__bwd";
+        //bwd_hitgroup_prog_group_desc.hitgroup.entryFunctionNameIS = "__intersection__is";
         sizeof_log = sizeof(log);
         OPTIX_CHECK_LOG(optixProgramGroupCreate(
             context,
