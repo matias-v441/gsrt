@@ -113,8 +113,8 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
             //| OPTIX_PAYLOAD_SEMANTICS_MS_READ  | OPTIX_PAYLOAD_SEMANTICS_MS_WRITE
             //| OPTIX_PAYLOAD_SEMANTICS_CH_READ  | OPTIX_PAYLOAD_SEMANTICS_CH_WRITE
             ;
-        constexpr int payload_size_fwd = 8;
-        unsigned int semantics_fwd[payload_size_fwd] = {
+        constexpr int payload_size_fwd = 32;//8;
+        unsigned int semantics_fwd[payload_size_fwd];/* = {
                                     payload_flags,
                                     payload_flags,
                                     payload_flags,
@@ -126,7 +126,10 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
                                     payload_flags,
 
                                     payload_flags,
-        };
+        };*/
+        for(int i = 0; i < 32; ++i){
+            semantics_fwd[i] = payload_flags;
+        }
         constexpr int payload_size_bwd = 11;
         unsigned int semantics_bwd[payload_size_bwd] = {
                                     payload_flags,
@@ -476,6 +479,7 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.debug_map_1 = tracing_params.debug_map_1;
         params.num_its = tracing_params.num_its;
         params.num_its_bwd = tracing_params.num_its_bwd;
+        params.distance = tracing_params.distance;
 
         params.compute_grad = tracing_params.compute_grad;
         params.grad_xyz = tracing_params.grad_xyz;
@@ -583,6 +587,112 @@ glm::mat3 construct_rotation(float4 vec){
     return R;
 }
 
+inline float kernelScale(float density, float modulatedMinResponse,  float kernelDegree) {
+    const float responseModulation = density;
+    const float minResponse        = fminf(modulatedMinResponse / responseModulation, 0.97f);
+
+    // bump kernel
+    if (kernelDegree < 0) {
+        const float k = fabsf(kernelDegree);
+        const float s     = 1.0 / powf(3.0, k);
+        const float ks = powf((1.f / (logf(minResponse) - 1.f) + 1.f) / s, 1.f / k);
+        return ks;
+    }
+
+    // linear kernel
+    if (kernelDegree == 0) {
+        return ((1.0f - minResponse) / 3.0f) / -0.329630334487f;
+    }
+
+    /// generalized gaussian of degree b : scaling a = -4.5/3^b
+    /// e^{a*|x|^b}
+    const float b = kernelDegree;
+    const float a = -4.5f / powf(3.0f, static_cast<float>(b));
+    /// find distance r (>0) st e^{a*r^b} = minResponse
+    /// TODO : reshuffle the math to call powf only once
+    return powf(logf(minResponse) / a, 1.0f / b);
+
+}
+
+
+using float33 = float3[3];
+
+static inline float3 operator*(const float33& m, const float3& p) {
+    return make_float3(
+        dot(make_float3(m[0].x, m[1].x, m[2].x), p),
+        dot(make_float3(m[0].y, m[1].y, m[2].y), p),
+        dot(make_float3(m[0].z, m[1].z, m[2].z), p));
+}
+
+static inline float3 operator*(const float3& p, const float33& m) {
+    return make_float3(dot(m[0], p), dot(m[1], p), dot(m[2], p));
+}
+
+static inline void invRotationMatrix(const float4& q, float33& ret) {
+    const float r = q.x;
+    const float x = q.y;
+    const float y = q.z;
+    const float z = q.w;
+
+    // Compute rotation matrix from quaternion
+    ret[0] = make_float3((1.f - 2.f * (y * y + z * z)), 2.f * (x * y - r * z), 2.f * (x * z + r * y));
+    ret[1] = make_float3(2.f * (x * y + r * z), (1.f - 2.f * (x * x + z * z)), 2.f * (y * z - r * x));
+    ret[2] = make_float3(2.f * (x * z - r * y), 2.f * (y * z + r * x), (1.f - 2.f * (x * x + y * y)));
+}
+constexpr uint32_t icosaHedronNumVrt = 12;
+constexpr uint32_t icosaHedronNumTri = 20;
+constexpr float goldenRatio   = 1.618033988749895;
+constexpr float icosaEdge     = 1.323169076499215;
+constexpr float icosaVrtScale = 0.5 * icosaEdge;
+void computeGaussianEnclosingIcosaHedronKernel(
+    const uint32_t gNum,
+    const float3* gPos,
+    const float4* gRot,
+    const float3* gScl,
+    const float* gDns,
+    const float kernelMinResponse,
+    const float degree,
+    float3* gPrimVrt,
+    uint3* gPrimTri) {
+
+    //const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    //if (idx < gNum)
+    for(int idx = 0; idx < gNum; ++idx)
+    {
+        const uint32_t sVertIdx = icosaHedronNumVrt * idx;
+        const uint32_t sTriIdx  = icosaHedronNumTri * idx;
+
+        float33 rot;
+        invRotationMatrix(gRot[idx], rot);
+        const float3 scl   = gScl[idx];
+        const float3 trans = gPos[idx];
+
+        const float3 icosaHedronVrt[icosaHedronNumVrt] = {
+            make_float3(-1, goldenRatio, 0), make_float3(1, goldenRatio, 0), make_float3(0, 1, -goldenRatio),
+            make_float3(-goldenRatio, 0, -1), make_float3(-goldenRatio, 0, 1), make_float3(0, 1, goldenRatio),
+            make_float3(goldenRatio, 0, 1), make_float3(0, -1, goldenRatio), make_float3(-1, -goldenRatio, 0),
+            make_float3(0, -1, -goldenRatio), make_float3(goldenRatio, 0, -1), make_float3(1, -goldenRatio, 0)};
+
+        const float3 kscl = kernelScale(gDns[idx], kernelMinResponse, degree) * scl * icosaVrtScale;
+        for (int i = 0; i < icosaHedronNumVrt; ++i) {
+            float3& vrt = gPrimVrt[sVertIdx + i];
+            vrt         = (icosaHedronVrt[i] * kscl) * rot + trans;
+        }
+
+        const uint3 icosaHedronTri[icosaHedronNumTri] = {
+            make_uint3(0, 1, 2), make_uint3(0, 2, 3), make_uint3(0, 3, 4), make_uint3(0, 4, 5), make_uint3(0, 5, 1),
+            make_uint3(6, 1, 5), make_uint3(6, 5, 7), make_uint3(6, 7, 11), make_uint3(6, 11, 10), make_uint3(6, 10, 1),
+            make_uint3(8, 4, 3), make_uint3(8, 3, 9), make_uint3(8, 9, 11), make_uint3(8, 11, 7), make_uint3(8, 7, 4),
+            make_uint3(9, 3, 2), make_uint3(9, 2, 10), make_uint3(9, 10, 11),
+            make_uint3(5, 4, 7), make_uint3(1, 10, 2)};
+        const uint3 triIdxOffset = make_uint3(sVertIdx, sVertIdx, sVertIdx);
+
+        for (int i = 0; i < icosaHedronNumTri; ++i) {
+            gPrimTri[sTriIdx + i] = icosaHedronTri[i] + triIdxOffset;
+        }
+    }
+}
+
 void construct_primitives(const int numgs, const float3* xyz, const float* opacity, const float3* scaling, const float4* rotation,
                         std::vector<float3>& vertices,std::vector<uint3>& triangles, std::vector<float3>& normals){
 
@@ -592,11 +702,16 @@ void construct_primitives(const int numgs, const float3* xyz, const float* opaci
     vertices.resize(n_verts*numgs);
     triangles.resize(n_faces*numgs);
     normals.resize(n_faces*numgs);
-    const float alpha_min = .01;
+    const float alpha_min = 0.0113f;
     for(int i = 0; i < numgs; ++i){
 
         glm::mat3 R = construct_rotation(rotation[i]);
-        float adaptive_scale = sqrt(2.*log(opacity[i]/alpha_min));
+
+        const float minResponse = fminf(alpha_min / 1.f, 0.97f);
+        const float b = 2.f;
+        const float a = -4.5f / powf(3.0f, static_cast<float>(b));
+        float adaptive_scale = powf(logf(minResponse) / a, 1.0f / b);
+        //float adaptive_scale = sqrt(2.*log(opacity[i]/alpha_min));
         float3 s = scaling[i]*adaptive_scale;
         glm::vec3 scale = glm::vec3(s.x,s.y,s.z);
 
@@ -618,7 +733,7 @@ void construct_primitives(const int numgs, const float3* xyz, const float* opaci
     }
 }
 
-void GaussiansAS::build() {
+void GaussiansAS::build(void* vrt, size_t svrt, void* tri, size_t stri) {
     release();
 
     CUDA_CHECK(cudaSetDevice(device));
@@ -636,13 +751,22 @@ void GaussiansAS::build() {
     std::vector<float3> vertices;
     std::vector<uint3> triangles;
     std::vector<float3> normals;
-    construct_primitives(numgs,xyz.data(),opacity.data(),scaling.data(),rotation.data(), vertices,triangles,normals);
+    vertices.resize(icosaHedronNumVrt*numgs);
+    triangles.resize(icosaHedronNumTri*numgs);
+    //normals.resize(n_faces*numgs);
+    //construct_primitives(numgs,xyz.data(),opacity.data(),scaling.data(),rotation.data(), vertices,triangles,normals);
+    computeGaussianEnclosingIcosaHedronKernel(numgs,xyz.data(),rotation.data(),
+        scaling.data(),opacity.data(),0.0113f,2.f,vertices.data(),triangles.data());
+
 
     auto toDevice = [&](auto& dst, void* src, size_t size){
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dst), size));
         CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(dst), src, size, cudaMemcpyHostToDevice));
     };
-    
+    // assert(svrt/3 == vertices.size());
+    // assert(stri/3 == triangles.size());
+    // d_vertices = reinterpret_cast<CUdeviceptr>(vrt);
+    // d_triangles = reinterpret_cast<CUdeviceptr>(tri);
     toDevice(d_vertices, vertices.data(), vertices.size() * sizeof(float3));
     toDevice(d_triangles, triangles.data(), triangles.size() * sizeof(uint3));
     toDevice(d_normals, normals.data(), normals.size() * sizeof(float3));
@@ -650,11 +774,11 @@ void GaussiansAS::build() {
     // Use default options for simplicity.  In a real use case we would want to
     // enable compaction, etc
     OptixAccelBuildOptions accel_options = {};
-    accel_options.buildFlags = OPTIX_BUILD_FLAG_NONE;
+    accel_options.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
     accel_options.operation = OPTIX_BUILD_OPERATION_BUILD;
 
     // Our build input is a simple list of non-indexed triangle vertices
-    const uint32_t triangle_input_flags[1] ={OPTIX_GEOMETRY_FLAG_NONE};// {OPTIX_GEOMETRY_FLAG_DISABLE_TRIANGLE_FACE_CULLING}; - does not do anything
+    const uint32_t triangle_input_flags[1] = {OPTIX_GEOMETRY_FLAG_REQUIRE_SINGLE_ANYHIT_CALL};
     OptixBuildInput triangle_input = {};
     triangle_input.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
     triangle_input.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;

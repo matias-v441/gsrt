@@ -562,7 +562,7 @@ __device__ __forceinline__ void add_grad_I(const Acc& acc, const float3& rad, co
     const float3 dresp_ddg = dresp_dt*dt_ddg;//^T
 
     const Matrix3x3 dog_dmu = (-1.f)*inv_RS;
-    const Matrix3x3 dxg_dmu = (1.f)*inv_RS;
+    const Matrix3x3 dxg_dmu = (-1.f)*inv_RS;
     const float3 dresp_dmu = dxg_dmu.transpose()*dresp_dxg + dog_dmu.transpose()*dresp_dog;//^T
 
     Matrix3x3 inv_RSS = inv_RS;
@@ -965,7 +965,7 @@ static __device__ inline float3 safe_normalize_bw(const float3& v, const float3&
 
 constexpr int triagPerParticle = 20;
 constexpr float Tmin = 0.001;
-constexpr float min_alpha = 1/255.f;//0.01f;
+constexpr float min_alpha = 1/255.f; //0.01f;
 constexpr float max_alpha = 0.99f;
 constexpr float min_kernel_density = 0.0113f;
 
@@ -1167,15 +1167,18 @@ __device__ bool compute_response(
     const float opacity, const Matrix3x3& inv_RS,unsigned int chit_id,
     float& alpha, float& tmax){
 
-    // float3 og = inv_RS*(mu-o);
-    // float3 dg = inv_RS*d;
-    // tmax = dot(og,dg)/max(eps,dot(dg,dg));
-    // //tmax = dot(og,dg)/(eps+dot(dg,dg));
-    // float3 c_samp = o+tmax*d;
-    // float3 v = inv_RS*(c_samp-mu);
-    // float resp = exp(-.5f*dot(v,v));
-    // if(resp < min_kernel_density) return false;
-    // alpha = min(0.99f,opacity*resp);
+    float my_alpha;
+    {
+        float3 og = inv_RS*(mu-o);
+        float3 dg = inv_RS*d;
+        tmax = dot(og,dg)/max(eps,dot(dg,dg));
+        //tmax = dot(og,dg)/(eps+dot(dg,dg));
+        float3 c_samp = o+tmax*d;
+        float3 v = inv_RS*(c_samp-mu);
+        float resp = exp(-.5f*dot(v,v));
+        if(resp < min_kernel_density) return false;
+        my_alpha = min(0.99f,opacity*resp);
+    }
 
     float3 particlePosition;
     float3 gscl;
@@ -1204,7 +1207,13 @@ __device__ bool compute_response(
     const float grayDist = dot(gcrod, gcrod);
     const float resp   = expf(-0.5f*grayDist);//particleResponse<ParticleKernelDegree>(grayDist);
     alpha = fminf(0.99f, resp * particleDensity);
-    
+
+    //if(abs(alpha - my_alpha) > 1e-5){
+    //    printf("%.9f\n",abs(alpha - my_alpha));
+    //}
+    //assert(abs(alpha - my_alpha) < 1e-5);
+    //alpha = my_alpha;
+
     //resp = opacity*exp(-dot(v,v));
     return (alpha > min_alpha) && (resp > min_kernel_density);
 }
@@ -1230,9 +1239,13 @@ extern "C" __global__ void __raygen__rg() {
 
     unsigned int hits_size = 0;
 
-    constexpr float max_dist = 100.f;//1e16f; 
+    float max_dist = 1e16f; 
     float min_dist = 0.f;
     constexpr float epsT = 1e-9f;
+
+    if(params.compute_grad){
+        //max_dist = params.distance[id]+epsT;
+    }
 
     Acc acc{};
     acc.radiance = make_float3(0.f);
@@ -1244,7 +1257,7 @@ extern "C" __global__ void __raygen__rg() {
     acc_full.transmittance = params.transmittance[id];
     unsigned int* uip_acc_full = reinterpret_cast<unsigned int *>(&acc_full);
 
-    while(min_dist <= max_dist && acc.transmittance > Tmin){
+    while((min_dist <= max_dist) && (acc.transmittance > Tmin /*|| params.compute_grad*/)){
         for(int i=0; i<chunk_size;++i){
             hits[i].thit = FLT_MAX;
         }
@@ -1253,7 +1266,7 @@ extern "C" __global__ void __raygen__rg() {
             params.handle,
             ray_origin,
             ray_direction,
-            min_dist,                      // Min intersection distance
+            min_dist+epsT,                      // Min intersection distance
             max_dist,                     // Max intersection distance
             0.0f,                      // rayTime -- used for motion blur
             OptixVisibilityMask(255),  // Specify always visible
@@ -1271,7 +1284,7 @@ extern "C" __global__ void __raygen__rg() {
 #pragma unroll
         for(int i=0; i<chunk_size;++i){
             const Hit chit = hits[i];
-            if(chit.thit != FLT_MAX && acc.transmittance > Tmin){
+            if((chit.thit != FLT_MAX) && (acc.transmittance > Tmin || params.compute_grad)){
                 float resp,thit; 
                 bool accept = compute_response(ray_origin,
                                 ray_direction,
@@ -1283,7 +1296,6 @@ extern "C" __global__ void __raygen__rg() {
                 if(accept)
                 {
                     float3 rad; bool clamped[3];
-                    float3 pos = ray_origin+ray_direction*chit.thit;
                     compute_radiance(chit.id,ray_origin,ray_direction,rad,clamped);
                     acc.radiance += rad*resp*acc.transmittance;
                     if(params.compute_grad){
@@ -1296,10 +1308,11 @@ extern "C" __global__ void __raygen__rg() {
                 min_dist = fmaxf(min_dist,chit.thit);
             }
         }
-        if(hits[hits_max_capacity-1].thit == FLT_MAX) break;
+        //if(hits[hits_max_capacity-1].thit == FLT_MAX) break;
     }
     params.radiance[id] = acc.radiance;
     params.transmittance[id] = acc.transmittance;
+    params.distance[id] = min_dist;
 }
 
 

@@ -49,20 +49,23 @@ struct PyGaussiansTracer {
                         bool compute_grad,
                         const torch::Tensor &dL_dC,
                         const torch::Tensor &out_rad,
-                        const torch::Tensor &out_trans
+                        const torch::Tensor &out_trans,
+                        const torch::Tensor &out_dist
                     ) {
 
         torch::AutoGradMode enable_grad(false);
         CHECK_FLOAT_DIM(ray_origins,3);
         CHECK_FLOAT_DIM(ray_directions,3);
         const size_t num_rays = ray_origins.numel() / 3;
-        torch::Tensor radiance,transmittance;
+        torch::Tensor radiance,transmittance,distance;
         if(compute_grad){
             radiance = out_rad;
             transmittance = out_trans;
+            distance = out_dist;
         }else{
             radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
             transmittance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
+            distance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
         }
 
         const auto debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
@@ -80,10 +83,11 @@ struct PyGaussiansTracer {
         tracing_params.ray_directions = reinterpret_cast<float3 *>(ray_directions.data_ptr());
         tracing_params.radiance = reinterpret_cast<float3 *>(radiance.data_ptr());
         tracing_params.transmittance = reinterpret_cast<float *>(transmittance.data_ptr());
-        tracing_params.debug_map_0 = nullptr;//reinterpret_cast<float3 *>(debug_map_0.data_ptr());
+        tracing_params.debug_map_0 = reinterpret_cast<float3 *>(debug_map_0.data_ptr());
         tracing_params.debug_map_1 = nullptr;//reinterpret_cast<float3 *>(debug_map_1.data_ptr());
         tracing_params.num_its = reinterpret_cast<unsigned long long*>(num_its.data_ptr());
         tracing_params.num_its_bwd = reinterpret_cast<unsigned long long*>(num_its_bwd.data_ptr());
+        tracing_params.distance = reinterpret_cast<float*>(distance.data_ptr());
 
         tracing_params.compute_grad = compute_grad;
         tracing_params.dL_dC = reinterpret_cast<float3*>(dL_dC.data_ptr());
@@ -120,6 +124,7 @@ struct PyGaussiansTracer {
                         "time_ms"_a = ms_frame,
                         "num_its"_a = *reinterpret_cast<unsigned long*>(num_its.cpu().data_ptr()),
                         "num_its_bwd"_a = *reinterpret_cast<unsigned long*>(num_its_bwd.cpu().data_ptr()),
+                        "distance"_a = distance,
                         "grad_xyz"_a = grad_xyz,
                         "grad_opacity"_a = grad_opacity,
                         "grad_sh"_a = grad_sh,
@@ -138,7 +143,9 @@ struct PyGaussiansTracer {
         const torch::Tensor &opacity,
         const torch::Tensor &sh,
         const int sh_deg,
-        const torch::Tensor &color
+        const torch::Tensor &color,
+        const torch::Tensor &vrt,
+        const torch::Tensor &tri
         ) {
 
         CHECK_FLOAT_DIM(xyz,3);
@@ -156,7 +163,9 @@ struct PyGaussiansTracer {
         particles.sh = reinterpret_cast<float3 *>(sh.data_ptr());
         particles.sh_deg = sh_deg;
         particles.color = reinterpret_cast<float3*>(color.data_ptr());
-        tracer->load_gaussians(particles);
+        tracer->load_gaussians(particles,
+            reinterpret_cast<void*>(vrt.data_ptr()), vrt.numel(),
+            reinterpret_cast<void*>(tri.data_ptr()), tri.numel());
     }
 
     const torch::Device &get_device() const {

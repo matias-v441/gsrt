@@ -22,6 +22,7 @@ struct Params {
 
     float3* radiance;
     float* transmittance;
+    float* distance;
     float3* debug_map_0;
     float3* debug_map_1;
 
@@ -44,6 +45,8 @@ struct Params {
     float3* rad_sh;
 
     float3* dL_dC;
+
+    static constexpr float minTransmittance = 0.001;
 
     OptixTraversableHandle handle;
 };

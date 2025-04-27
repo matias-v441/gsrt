@@ -17,7 +17,7 @@ backend = "conda"
 output_path = "output"
 
 # We will use the data from the "mipnerf360/bicycle" scene
-#data = "external://mipnerf360/bicycle"
+#data = "external://mipnerf360/bonsai"
 data = "external://blender/lego"
 
 # We use the exit stack to simplify the context management
@@ -47,11 +47,12 @@ print(train_dataset.keys())
 print(train_dataset['metadata'])
 
 # Load eval dataset
-#test_dataset = load_dataset(data, 
-#                            split="test", 
-#                            features=method_info.get("required_features"),
-#                            supported_camera_models=method_info.get("supported_camera_models"),
-#                            load_features=True)
+# test_dataset = load_dataset(data, 
+#                             split="test", 
+#                             features=method_info.get("required_features"),
+#                             supported_camera_models=method_info.get("supported_camera_models"),
+#                             load_features=True)
+# 
 
 # Each method can specify custom presets and config overrides
 # Apply config overrides for the train dataset
@@ -59,14 +60,19 @@ presets, config_overrides = get_presets_and_config_overrides(
     method_spec, train_dataset["metadata"])
 
 chpt_iter = 1
+track = False
+view_async = True
 use_chpt = True
 config_overrides["3dgs_data"] = False
 config_overrides["3dgrt_data"] = True
 if use_chpt:
     model = method_cls(
-        #checkpoint=f'gsrt_checkpoint_1/checkpoint_{chpt_iter}.pt',
+        #checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
         #checkpoint=f'lego_3dgrt/lego-0804_235516/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
-        checkpoint=f'lego_3dgrt/lego-1604_164539/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
+        #checkpoint=f'lego_3dgrt/lego-1604_164539/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
+        #checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-1804_182847/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
+        checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-2204_020424/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
+        #checkpoint=f'/home/matbi/proj/3dgrut/runs/bonsai-2304_211030/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         train_dataset=train_dataset,
         config_overrides=config_overrides,
     )
@@ -107,7 +113,6 @@ start_iteration = chpt_iter if use_chpt else 0
 import wandb
 import numpy as np
 
-track = True
 
 if track:
     wandb.init(
@@ -142,7 +147,6 @@ viewer = stack.enter_context(Viewer(
                 #test_dataset=test_dataset, 
                 model=model))
 
-view_async = True
 if view_async:
     import threading
     tviewer = threading.Thread(target=viewer.run)

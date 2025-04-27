@@ -37,6 +37,7 @@ struct TracingParams
 
     float3 *radiance;
     float *transmittance;
+    float *distance;
     float3 *debug_map_0;
     float3 *debug_map_1;
     unsigned long long *num_its;
@@ -62,9 +63,9 @@ class GaussiansAS {
     GaussiansAS(
         const OptixDeviceContext &context,
         const uint8_t device,
-        const GaussiansData& d_gaussians):GaussiansAS(context, device){
+        const GaussiansData& d_gaussians, void* vrt, size_t svrt, void* tri, size_t stri):GaussiansAS(context, device){
         this->d_gaussians = d_gaussians;
-        build();
+        build(vrt,svrt,tri,stri);
     }
 
     ~GaussiansAS() noexcept(false);
@@ -111,7 +112,7 @@ class GaussiansAS {
     }
 
    private:
-    void build();
+    void build(void* vrt, size_t svrt, void* tri, size_t stri);
 
     void release();
     OptixDeviceContext context = nullptr;
@@ -199,8 +200,8 @@ class GaussiansTracer {
     }
     GaussiansTracer(GaussiansTracer &&other);
 
-    void load_gaussians(const GaussiansData& data) {
-        gaussians_structure = std::move(GaussiansAS(context, device, data));
+    void load_gaussians(const GaussiansData& data, void* vrt,size_t svrt, void* tri, size_t stri) {
+        gaussians_structure = std::move(GaussiansAS(context, device, data,vrt,svrt,tri,stri));
     }
 
     void trace_rays(const TracingParams &tracing_params) {
