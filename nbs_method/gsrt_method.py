@@ -479,7 +479,7 @@ class GSRTMethod(Method):
         # self.spatial_lr_scale = 0
 
         l = [
-            {'params': [self._xyz], 'lr': position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+            {'params': [self._xyz], 'lr': position_lr_init, "name": "xyz"}, # * self.spatial_lr_scale
             {'params': [self._features_dc], 'lr': self.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': self.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': opacity_lr, "name": "opacity"},
@@ -491,8 +491,8 @@ class GSRTMethod(Method):
         for p in l:
             p['params'][0].requires_grad_(True)
 
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=position_lr_init*self.spatial_lr_scale,
-                                                    lr_final=position_lr_final*self.spatial_lr_scale,
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=position_lr_init*self.scene_extent, #*self.spatial_lr_scale,
+                                                    lr_final=position_lr_final*self.scene_extent, #*self.spatial_lr_scale,
                                                     lr_delay_mult=position_lr_delay_mult,
                                                     max_steps=position_lr_max_steps)
         
@@ -751,7 +751,7 @@ class GSRTMethod(Method):
 
     def train_iteration(self, step: int) -> Dict[str, float]:
 
-        iteration = step+1
+        iteration = step
         self.iteration = iteration
 
         self.update_learning_rate(iteration)
@@ -885,6 +885,9 @@ class GSRTMethod(Method):
         # print("scaling grad:",None if self._scaling.grad is None else self._scaling.grad.max(dim=0).values)
 
         with torch.no_grad():
+            if (step >= 100 and step%100==0) or (step in [1,2,3,50]):
+                    print(f'saving checkpoint_{step}')
+                    self.save("gsrt_checkpoint",step)
             if check_grad:
                 print("ref hit counts: ", self.ref_grads["hits_count"].sum().item(), self.ref_grads["hits_count"].cpu())
                 loss_ref = get_loss(self.ref_grads["pred_rgb"],self.ref_grads["ref_rgb"]).item()
