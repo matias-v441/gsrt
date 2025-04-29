@@ -810,7 +810,7 @@ class GSRTMethod(Method):
                 'height':res_y,
                 'sh_deg':self.active_sh_degree,
                 'mesh_vrt':None,#self.ref_grads["mesh_vrt"],
-                'mesh_tri':None #self.ref_grads["mesh_tri"],
+                'mesh_tri':None,#self.ref_grads["mesh_tri"],
             }
         white_background = False
         gt_image = torch.from_numpy(self.train_dataset['images'][vp_id])/255

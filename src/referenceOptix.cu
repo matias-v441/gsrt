@@ -354,6 +354,58 @@ static inline __device__ float3 radianceFromSpHBwd(
 }
 
 
+#include "utils/Matrix.h"
+using namespace util;
+
+constexpr float eps = 1e-6;
+
+__device__ bool compute_response(
+    const float3& o, const float3& d, const float3& mu,
+    const float opacity, const Matrix3x3& inv_RS,unsigned int chit_id,
+    float& alpha, float& tmax){
+
+    constexpr float min_kernel_density = 0.0113f;
+    constexpr float min_alpha = 1/255.f; //0.01f;
+
+    float3 og = inv_RS*(mu-o);
+    float3 dg = inv_RS*d;
+
+    tmax = dot(og,dg)/max(eps,dot(dg,dg));
+    //tmax = dot(og,dg)/(eps+dot(dg,dg));
+    float3 c_samp = o+tmax*d;
+    float3 v = inv_RS*(c_samp-mu);
+    float resp = exp(-.5f*dot(v,v));
+    if(resp < min_kernel_density) return false;
+    alpha = min(0.99f,opacity*resp);
+    
+    return (alpha > min_alpha) && (resp > min_kernel_density);
+}
+
+__device__ Matrix3x3 construct_rotation(float4 q){
+    q = normalize(q);
+    float r = q.x;
+    float x = q.y;
+    float y = q.z;
+    float z = q.w;
+    Matrix3x3 R({
+        1.f - 2.f * (y*y + z*z), 2.f * (x*y - r*z),       2.f * (x*z + r*y),
+        2.f * (x*y + r*z),       1.f - 2.f * (x*x + z*z), 2.f * (y*z - r*x),
+        2.f * (x*z - r*y),       2.f * (y*z + r*x), 1.f   -2.f * (x*x + y*y)});
+    return R;
+}
+
+__device__ __forceinline__ void inv_S_times_M_(const float3 s, Matrix3x3& M){
+    M.setRow(0,M.getRow(0)/max(s.x,eps));
+    M.setRow(1,M.getRow(1)/max(s.y,eps));
+    M.setRow(2,M.getRow(2)/max(s.z,eps));
+}
+
+__device__ __forceinline__ Matrix3x3 construct_inv_RS(const float4& rot, const float3& s){
+    Matrix3x3 RT = construct_rotation(rot).transpose();
+    inv_S_times_M_(s,RT);
+    return RT;
+}
+
 __device__ inline bool processHit(
     const float3& rayOrigin,
     const float3& rayDirection,
@@ -376,10 +428,8 @@ __device__ inline bool processHit(
     const float3 rayDirR = rayDirection * particleInvRotation;
     const float3 grdu    = giscl * rayDirR;
     const float3 grd     = safe_normalize(grdu);
-
     const float3 gcrod   =  cross(grd, gro);
     const float grayDist = dot(gcrod, gcrod);
-
     const float gres   = expf(-0.5f*grayDist);//particleResponse<ParticleKernelDegree>(grayDist);
     const float galpha = fminf(0.99f, gres * particleDensity);
 
@@ -388,8 +438,8 @@ __device__ inline bool processHit(
         const float weight = galpha * (*transmittance);
 
         // distance to the gaussian center projection on the ray
-        const float3 grds = particleScale * grd * (dot(grd, -1 * gro));
-        const float hitT  = sqrtf(dot(grds, grds));
+        // const float3 grds = particleScale * grd * (dot(grd, -1 * gro));
+        // const float hitT  = sqrtf(dot(grds, grds));
 
         // radiance from sph coefficients
         float3 sphCoefficients[SPH_MAX_NUM_COEFFS];

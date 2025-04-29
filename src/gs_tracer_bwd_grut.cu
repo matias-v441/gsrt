@@ -523,7 +523,7 @@ __device__ __forceinline__ void add_grad_0(const Acc& acc, const float3& rad, co
     atomicAdd(&params.grad_rotation[chit_id].w,dL_dq[3]);
 }
 
-__device__ __forceinline__ void add_grad_I(const Acc& acc, const float3& rad, const Acc& acc_full,
+__device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, const Acc& acc_full,
                                         int chit_id, const float3& csamp,
                                         const float resp, 
                                         const float3 ray_origin,
@@ -538,17 +538,18 @@ __device__ __forceinline__ void add_grad_I(const Acc& acc, const float3& rad, co
     const float3 pos = params.gs_xyz[chit_id];
     const float opacity = params.gs_opacity[chit_id];
 
-    float3 background{1.f,1.f,1.f};
-    //const float3 dC_dresp = (acc.transmittance*rad - (acc_full.radiance - acc.radiance)/*/max(eps,1.f-resp)*/) - background*acc_full.transmittance/max(eps,1.f-resp);
-    const float3 dC_dresp = acc.transmittance*(rad - acc_full.radiance + acc.radiance)/*/max(eps,1.f-resp)*/ - background*acc_full.transmittance/max(eps,1.f-resp);
+    //float3 background{1.f,1.f,1.f};
+    float3 background{0.f,0.f,0.f};
+    const float3 dC_dresp = acc.transmittance*rad - (acc_full.radiance - acc.radiance)/max(eps,1.f-resp)
+                            - background*acc_full.transmittance/max(eps,1.f-resp);
 
     const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
 
     const float3 csamp_pos = csamp-pos;
     const float3 xg = inv_RS*csamp_pos;
-    const float G = __expf(-dot(xg,xg));
+    const float G = __expf(-0.5f*dot(xg,xg));
 
-    const float3 dresp_dxg = -2.f*opacity*G*xg;//^T
+    const float3 dresp_dxg = -opacity*G*xg;//^T
     const Matrix3x3 dxg_dcsamp = inv_RS;
     const float3 dg = inv_RS * ray_direction;
     const float3 o_pos = ray_origin-pos;
@@ -574,29 +575,29 @@ __device__ __forceinline__ void add_grad_I(const Acc& acc, const float3& rad, co
 
     const float qr=quat.x, qi=quat.y, qj=quat.z, qk=quat.w;
     Matrix3x3 dR_dqr({
-        0.f, -qk, qj,
-        qk, 0.f, -qi,
-        -qj, qi, 0.f
+        0.f, qk, -qj,
+        -qk, 0.f, qi,
+        qj, -qi, 0.f
     });
-    dR_dqr *= 2.f;
+    //dR_dqr *= 2.f; // do it in the end
     Matrix3x3 dR_dqi({
         0.f, qj, qk,
-        qj, -2.f*qi, -qr,
-        qk, qr, -2.f*qi
+        qj, -2.f*qi, qr,
+        qk, -qr, -2.f*qi
     });
-    dR_dqi *= 2.f;
+    //dR_dqi *= 2.f;
     Matrix3x3 dR_dqj({
-        -2.f*qj, qi, qr,
+        -2.f*qj, qi, -qr,
         qi, 0.f, qk,
-        -qr, qk, -2.f*qj
+        qr, qk, -2.f*qj
     });
-    dR_dqj *= 2.f;
+    //dR_dqj *= 2.f;
     Matrix3x3 dR_dqk({
-        -2.f*qk, -qr, qi,
-        qr, -2.f*qk, qj,
+        -2.f*qk, qr, qi,
+        -qr, -2.f*qk, qj,
         qi, qj, 0.f
     });
-    dR_dqk *= 2.f;
+    //dR_dqk *= 2.f;
 
     inv_S_times_M_(scale,dR_dqr);
     inv_S_times_M_(scale,dR_dqi);
@@ -649,21 +650,11 @@ __device__ __forceinline__ void add_grad_I(const Acc& acc, const float3& rad, co
     const float3 dL_ds = dL_dresp*dresp_ds;
     atomicAdd_float3(params.grad_scale[chit_id],dL_ds);
 
-    const float4 dL_dq = dL_dresp*dresp_dq;
+    const float4 dL_dq = dL_dresp*dresp_dq *2.f;
     atomicAdd(&params.grad_rotation[chit_id].x,dL_dq.x);
     atomicAdd(&params.grad_rotation[chit_id].y,dL_dq.y);
     atomicAdd(&params.grad_rotation[chit_id].z,dL_dq.z);
     atomicAdd(&params.grad_rotation[chit_id].w,dL_dq.w);
-
-    //#define _norm_(x) sqrt(dot(x,x))
-    //if(sqrt(dot(grad_pos,grad_pos)) > 10.)
-    //    printf("POS GRAD NORM %f %f %f %f %f %f\n",
-    //        _norm_(d_resp_pos),
-    //        dL_dresp,
-    //        G,
-    //        _norm_(x),
-    //        _norm_((inv_RS*inv_RS.transpose())*x),
-    //        opacity);
 }
 
 
@@ -969,25 +960,7 @@ constexpr float min_alpha = 1/255.f; //0.01f;
 constexpr float max_alpha = 0.99f;
 constexpr float min_kernel_density = 0.0113f;
 
-__device__ inline void add_grad/*(
-    const float3& rayOrigin,
-    const float3& rayDirection,
-    int32_t particleIdx,
-    const ParticleDensity* particleDensityPtr,
-    ParticleDensity* particleDensityGradPtr,
-    const float* particleRadiancePtr,
-    float* particleRadianceGradPtr,
-    float minParticleKernelDensity,
-    float minParticleAlpha,
-    float minTransmittance,
-    int32_t sphEvalDegree,
-    float integratedTransmittance,
-    float& transmittance,
-    float transmittanceGrad,
-    float3 integratedRadiance,
-    float3& radiance,
-    float3 radianceGrad,
-    )*/(const Acc& acc, const float3& rad, const Acc& acc_full,
+__device__ inline void add_grad_grut(const Acc& acc, const float3& rad, const Acc& acc_full,
                                         int chit_id, const float3& csamp,
                                         const float resp, 
                                         const float3 ray_origin,
@@ -1167,54 +1140,16 @@ __device__ bool compute_response(
     const float opacity, const Matrix3x3& inv_RS,unsigned int chit_id,
     float& alpha, float& tmax){
 
-    float my_alpha;
-    {
-        float3 og = inv_RS*(mu-o);
-        float3 dg = inv_RS*d;
-        tmax = dot(og,dg)/max(eps,dot(dg,dg));
-        //tmax = dot(og,dg)/(eps+dot(dg,dg));
-        float3 c_samp = o+tmax*d;
-        float3 v = inv_RS*(c_samp-mu);
-        float resp = exp(-.5f*dot(v,v));
-        if(resp < min_kernel_density) return false;
-        my_alpha = min(0.99f,opacity*resp);
-    }
+    float3 og = inv_RS*(mu-o);
+    float3 dg = inv_RS*d;
+    tmax = dot(og,dg)/max(eps,dot(dg,dg));
+    //tmax = dot(og,dg)/(eps+dot(dg,dg));
+    float3 c_samp = o+tmax*d;
+    float3 v = inv_RS*(c_samp-mu);
+    float resp = exp(-.5f*dot(v,v));
+    if(resp < min_kernel_density) return false;
+    alpha = min(0.99f,opacity*resp);
 
-    float3 particlePosition;
-    float3 gscl;
-    float33 particleInvRotation;
-    float particleDensity;
-    float4 grot;
-    {
-        grot = params.gs_rotation[chit_id];
-        gscl = params.gs_scaling[chit_id];
-        particlePosition = params.gs_xyz[chit_id];
-        particleDensity = params.gs_opacity[chit_id];
-        const uint3 launch_idxy = optixGetLaunchIndex();
-        const uint3 launch_dim = optixGetLaunchDimensions();
-        const int launch_id = launch_idxy.x + launch_idxy.y*launch_dim.x;
-        rotationMatrixTranspose(grot, particleInvRotation);
-    }
-    // project ray in the gaussian
-    const float3 giscl   = make_float3(1 / gscl.x, 1 / gscl.y, 1 / gscl.z);
-    const float3 gposc   = (o - particlePosition);
-    const float3 gposcr  = (gposc * particleInvRotation);
-    const float3 gro     = giscl * gposcr;
-    const float3 rayDirR = d * particleInvRotation;
-    const float3 grdu    = giscl * rayDirR;
-    const float3 grd     = safe_normalize(grdu);
-    const float3 gcrod   = cross(grd, gro);
-    const float grayDist = dot(gcrod, gcrod);
-    const float resp   = expf(-0.5f*grayDist);//particleResponse<ParticleKernelDegree>(grayDist);
-    alpha = fminf(0.99f, resp * particleDensity);
-
-    //if(abs(alpha - my_alpha) > 1e-5){
-    //    printf("%.9f\n",abs(alpha - my_alpha));
-    //}
-    //assert(abs(alpha - my_alpha) < 1e-5);
-    //alpha = my_alpha;
-
-    //resp = opacity*exp(-dot(v,v));
     return (alpha > min_alpha) && (resp > min_kernel_density);
 }
 
@@ -1244,7 +1179,7 @@ extern "C" __global__ void __raygen__rg() {
     constexpr float epsT = 1e-9f;
 
     if(params.compute_grad){
-        //max_dist = params.distance[id]+epsT;
+        max_dist = params.distance[id]+epsT;
     }
 
     Acc acc{};
@@ -1257,7 +1192,7 @@ extern "C" __global__ void __raygen__rg() {
     acc_full.transmittance = params.transmittance[id];
     unsigned int* uip_acc_full = reinterpret_cast<unsigned int *>(&acc_full);
 
-    while((min_dist <= max_dist) && (acc.transmittance > Tmin /*|| params.compute_grad*/)){
+    while((min_dist < max_dist) && (acc.transmittance > Tmin || params.compute_grad)){
         for(int i=0; i<chunk_size;++i){
             hits[i].thit = FLT_MAX;
         }
@@ -1300,7 +1235,7 @@ extern "C" __global__ void __raygen__rg() {
                     acc.radiance += rad*resp*acc.transmittance;
                     if(params.compute_grad){
                         add_grad(acc,rad,acc_full,chit.id,
-                            ray_origin+ray_direction*chit.thit,
+                            ray_origin+ray_direction*thit,
                             resp, ray_origin, ray_direction, clamped);
                     }
                     acc.transmittance *= (1.-resp);
@@ -1332,21 +1267,6 @@ __device__ inline bool intersectInstanceParticle(
         return (dot(gcrod, gcrod) * denominator < maxParticleSquaredDistance);
     }
     return false;
-}
-
-extern "C" __global__ void __intersection__is() {
-    float hitDistance;
-    printf("intersection\n");
-    bool intersect = intersectInstanceParticle(optixGetObjectRayOrigin(),
-                                optixGetObjectRayDirection(),
-                                optixGetInstanceIndex(),
-                                optixGetRayTmin(),
-                                optixGetRayTmax(),
-                                9.f,
-                                hitDistance);
-    if(intersect){
-        optixReportIntersection(0.f,0);
-    }
 }
 
 extern "C" __global__ void __anyhit__fwd() {
@@ -1401,33 +1321,4 @@ extern "C" __global__ void __anyhit__bwd() {
 
     optixSetPayloadTypes(OPTIX_PAYLOAD_TYPE_ID_1);
 
-    unsigned int p_hitq[2];
-    p_hitq[0] = optixGetPayload_4();
-    p_hitq[1] = optixGetPayload_5();
-    Hit* hitq;
-    memcpy(&hitq, p_hitq, sizeof(p_hitq));
-
-    const unsigned int prim_id = optixGetPrimitiveIndex();
-    float3 normal = params.gs_normals[prim_id];
-    if(dot(normal,optixGetWorldRayDirection())>0.){
-        optixIgnoreIntersection();
-        return;
-    }
-
-    const unsigned int hit_id = optixGetPrimitiveIndex()/triagPerParticle;
-
-    Hit hit;
-    hit.id = hit_id;
-    hit.thit = optixGetRayTmax();
-
-    for(int i = 0; i < chunk_size; ++i){
-        float thit = hitq[i].thit;
-        if(thit > hit.thit){
-            hitq[i] = hit;
-            hit.thit = thit;
-        }
-    }
-
-    if(optixGetRayTmax() < hitq[chunk_size-1].thit)
-        optixIgnoreIntersection();
 }

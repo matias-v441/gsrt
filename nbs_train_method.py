@@ -61,17 +61,17 @@ presets, config_overrides = get_presets_and_config_overrides(
 
 chpt_iter = 1
 track = False
-view_async = True
+view_async = False
 use_chpt = True
 config_overrides["3dgs_data"] = False
-config_overrides["3dgrt_data"] = True
+config_overrides["3dgrt_data"] = False
 if use_chpt:
     model = method_cls(
-        #checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
+        checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
         #checkpoint=f'lego_3dgrt/lego-0804_235516/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         #checkpoint=f'lego_3dgrt/lego-1604_164539/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         #checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-1804_182847/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
-        checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-2204_020424/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
+        #checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-2204_020424/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         #checkpoint=f'/home/matbi/proj/3dgrut/runs/bonsai-2304_211030/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         train_dataset=train_dataset,
         config_overrides=config_overrides,
