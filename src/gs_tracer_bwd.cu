@@ -310,20 +310,6 @@ __device__ __forceinline__ Matrix3x3 construct_inv_RS(const float4& rot, const f
     return RT;
 }
 
-__device__ void compute_response(
-    const float3& o, const float3& d, const float3& mu,
-    const float opacity, const Matrix3x3& inv_RS,
-    float& resp, float& tmax){
-
-    float3 og = inv_RS*(mu-o);
-    float3 dg = inv_RS*d;
-    tmax = dot(og,dg)/max(eps,dot(dg,dg));
-    //tmax = dot(og,dg)/(eps+dot(dg,dg));
-    float3 c_samp = o+tmax*d;
-    float3 v = inv_RS*(c_samp-mu);
-    resp = min(0.99f,opacity*exp(-.5f*dot(v,v)));
-    //resp = opacity*exp(-dot(v,v));
-}
 
 struct Acc{
     float3 radiance;
@@ -1022,7 +1008,7 @@ static __device__ inline float3 safe_normalize_bw(const float3& v, const float3&
     return make_float3(0);
 }
 
-__device__ inline void add_grad/*(
+__device__ inline void add_grad_grut/*(
     const float3& rayOrigin,
     const float3& rayDirection,
     int32_t particleIdx,
@@ -1209,6 +1195,140 @@ __device__ inline void add_grad/*(
     }
 }
 
+
+__device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, const Acc& acc_full,
+                                        int chit_id, const float3& csamp,
+                                        const float resp, 
+                                        const float3 ray_origin,
+                                        const float3 ray_direction,
+                                        const bool* clamped
+                                        ){
+
+    atomicAdd(params.num_its_bwd,1ull);
+
+    const float4 quat = params.gs_rotation[chit_id];
+    const float3 scale = params.gs_scaling[chit_id];
+    const float3 pos = params.gs_xyz[chit_id];
+    const float opacity = params.gs_opacity[chit_id];
+
+    float3 background = params.white_background? make_float3(1.f) : make_float3(0.f);
+    const float3 dC_dresp = acc.transmittance*rad - (acc_full.radiance - acc.radiance)/max(eps,1.f-resp)
+                            - background*acc_full.transmittance/max(eps,1.f-resp);
+
+    const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
+
+    const float3 csamp_pos = csamp-pos;
+    const float3 xg = inv_RS*csamp_pos;
+    const float G = __expf(-0.5f*dot(xg,xg));
+
+    const float3 dresp_dxg = -opacity*G*xg;//^T
+    const Matrix3x3 dxg_dcsamp = inv_RS;
+    const float3 dg = inv_RS * ray_direction;
+    const float3 o_pos = ray_origin-pos;
+    const float3 og = inv_RS * o_pos;
+    float dg2 = max(eps,dot(dg,dg));
+    const float3 dcsamp_dt = ray_direction;
+    const float dresp_dt = dot(dresp_dxg,dxg_dcsamp*dcsamp_dt);
+    const float3 dt_dog = dg/dg2;//^T
+    const float3 dt_ddg = og/dg2 - 2.f*dot(og,dg)/max(dg2*dg2,eps) * dg;//^T
+    const float3 dresp_dog = dresp_dt*dt_dog;//^T
+    const float3 dresp_ddg = dresp_dt*dt_ddg;//^T
+
+    const Matrix3x3 dog_dmu = (-1.f)*inv_RS;
+    const Matrix3x3 dxg_dmu = (-1.f)*inv_RS;
+    const float3 dresp_dmu = dxg_dmu.transpose()*dresp_dxg + dog_dmu.transpose()*dresp_dog;//^T
+
+    Matrix3x3 inv_RSS = inv_RS;
+    inv_S_times_M_(scale,inv_RSS);
+    const float3 dxg_ds_diag = (-1.f)*inv_RSS*csamp_pos;
+    const float3 dog_ds_diag = (-1.f)*inv_RSS*o_pos;
+    const float3 ddg_ds_diag = (-1.f)*inv_RSS*ray_direction;
+    const float3 dresp_ds = dresp_dxg*dxg_ds_diag + dresp_dog*dog_ds_diag + dresp_ddg*ddg_ds_diag;
+
+    const float qr=quat.x, qi=quat.y, qj=quat.z, qk=quat.w;
+    Matrix3x3 dR_dqr({
+        0.f, qk, -qj,
+        -qk, 0.f, qi,
+        qj, -qi, 0.f
+    });
+    //dR_dqr *= 2.f; // do it in the end
+    Matrix3x3 dR_dqi({
+        0.f, qj, qk,
+        qj, -2.f*qi, qr,
+        qk, -qr, -2.f*qi
+    });
+    //dR_dqi *= 2.f;
+    Matrix3x3 dR_dqj({
+        -2.f*qj, qi, -qr,
+        qi, 0.f, qk,
+        qr, qk, -2.f*qj
+    });
+    //dR_dqj *= 2.f;
+    Matrix3x3 dR_dqk({
+        -2.f*qk, qr, qi,
+        -qr, -2.f*qk, qj,
+        qi, qj, 0.f
+    });
+    //dR_dqk *= 2.f;
+
+    inv_S_times_M_(scale,dR_dqr);
+    inv_S_times_M_(scale,dR_dqi);
+    inv_S_times_M_(scale,dR_dqj);
+    inv_S_times_M_(scale,dR_dqk);
+
+    const float3 dxg_dqr = dR_dqr*csamp_pos;
+    const float3 dxg_dqi = dR_dqi*csamp_pos;
+    const float3 dxg_dqj = dR_dqj*csamp_pos;
+    const float3 dxg_dqk = dR_dqk*csamp_pos;
+
+    const float3 dog_dqr = dR_dqr*o_pos;
+    const float3 dog_dqi = dR_dqi*o_pos;
+    const float3 dog_dqj = dR_dqj*o_pos;
+    const float3 dog_dqk = dR_dqk*o_pos;
+
+    const float3 ddg_dqr = dR_dqr*ray_direction;
+    const float3 ddg_dqi = dR_dqi*ray_direction;
+    const float3 ddg_dqj = dR_dqj*ray_direction;
+    const float3 ddg_dqk = dR_dqk*ray_direction;
+
+    const float4 dresp_dq = {
+        dot(dresp_dxg,dxg_dqr)+dot(dresp_dog,dog_dqr)+dot(dresp_ddg,ddg_dqr),
+        dot(dresp_dxg,dxg_dqi)+dot(dresp_dog,dog_dqi)+dot(dresp_ddg,ddg_dqi),
+        dot(dresp_dxg,dxg_dqj)+dot(dresp_dog,dog_dqj)+dot(dresp_ddg,ddg_dqj),
+        dot(dresp_dxg,dxg_dqk)+dot(dresp_dog,dog_dqk)+dot(dresp_ddg,ddg_dqk)
+    };
+
+    const uint3 launch_idxy = optixGetLaunchIndex();
+    const uint3 launch_dim = optixGetLaunchDimensions();
+    const int launch_id = launch_idxy.x + launch_idxy.y*launch_dim.x;
+    const float3 dL_dC = params.dL_dC[launch_id];
+
+    const float dL_dresp = dot(dL_dC,dC_dresp);
+    atomicAdd(&params.grad_resp[chit_id],dL_dresp);
+
+    const float dL_dopac = dL_dresp*G;
+    atomicAdd(&params.grad_opacity[chit_id],dL_dopac);
+
+    float3 dL_dmu = dL_dresp * dresp_dmu;
+
+    const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
+    const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
+    float3 sh_grad_xyz;
+    compute_radiance_bwd(chit_id,ray_origin,ray_direction,dL_dcolor,sh_grad_xyz,clamped);
+    //dL_dmu += sh_grad_xyz;
+
+    atomicAdd_float3(params.grad_xyz[chit_id],dL_dmu);
+
+    const float3 dL_ds = dL_dresp*dresp_ds;
+    atomicAdd_float3(params.grad_scale[chit_id],dL_ds);
+
+    const float4 dL_dq = dL_dresp*dresp_dq *2.f;
+    atomicAdd(&params.grad_rotation[chit_id].x,dL_dq.x);
+    atomicAdd(&params.grad_rotation[chit_id].y,dL_dq.y);
+    atomicAdd(&params.grad_rotation[chit_id].z,dL_dq.z);
+    atomicAdd(&params.grad_rotation[chit_id].w,dL_dq.w);
+}
+
 constexpr int chunk_size = 1024;
 
 constexpr int num_recasts = 1;
@@ -1217,6 +1337,24 @@ constexpr int hits_max_capacity = chunk_size*num_recasts;
 constexpr int triagPerParticle = 20;
 constexpr float Tmin = 0.001;
 constexpr float respMin = 1/255.f;//0.01f;
+
+constexpr float min_kernel_density = 0.0113f;
+
+__device__ void compute_response(
+    const float3& o, const float3& d, const float3& mu,
+    const float opacity, const Matrix3x3& inv_RS,
+    float& resp, float& tmax){
+
+    float3 og = inv_RS*(mu-o);
+    float3 dg = inv_RS*d;
+    tmax = dot(og,dg)/max(eps,dot(dg,dg));
+    //tmax = dot(og,dg)/(eps+dot(dg,dg));
+    float3 c_samp = o+tmax*d;
+    float3 v = inv_RS*(c_samp-mu);
+    resp = min(0.99f,opacity*exp(-.5f*dot(v,v)));
+    //resp = opacity*exp(-dot(v,v));
+}
+
 
 extern "C" __global__ void __raygen__rg() {
 
@@ -1261,7 +1399,7 @@ extern "C" __global__ void __raygen__rg() {
                 max_dist,                     // Max intersection distance
                 0.0f,                      // rayTime -- used for motion blur
                 OptixVisibilityMask(255),  // Specify always visible
-                OPTIX_RAY_FLAG_NONE,
+                OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT | OPTIX_RAY_FLAG_CULL_BACK_FACING_TRIANGLES,//OPTIX_RAY_FLAG_NONE,
                 0,  // SBT offset   -- See SBT discussion
                 2,  // SBT stride   -- See SBT discussion
                 0,  // missSBTIndex -- See SBT discussion
@@ -1308,7 +1446,7 @@ extern "C" __global__ void __raygen__rg() {
             max_dist,                     // Max intersection distance
             0.0f,                      // rayTime -- used for motion blur
             OptixVisibilityMask(255),  // Specify always visible
-            OPTIX_RAY_FLAG_NONE,
+            OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT | OPTIX_RAY_FLAG_CULL_BACK_FACING_TRIANGLES,//OPTIX_RAY_FLAG_NONE,
             1,  // SBT offset   -- See SBT discussion
             2,  // SBT stride   -- See SBT discussion
             0,  // missSBTIndex -- See SBT discussion
@@ -1377,12 +1515,12 @@ extern "C" __global__ void __anyhit__fwd() {
     }
 
 
-    const unsigned int prim_id = optixGetPrimitiveIndex();
-    float3 normal = params.gs_normals[prim_id];
-    if(dot(normal,optixGetWorldRayDirection())>0.){
-        optixIgnoreIntersection();
-        return;
-    }
+    // const unsigned int prim_id = optixGetPrimitiveIndex();
+    // float3 normal = params.gs_normals[prim_id];
+    // if(dot(normal,optixGetWorldRayDirection())>0.){
+    //     optixIgnoreIntersection();
+    //     return;
+    // }
 
     const unsigned int hit_id = optixGetPrimitiveIndex()/triagPerParticle;
     float resp,thit; 
@@ -1436,12 +1574,12 @@ extern "C" __global__ void __anyhit__bwd() {
     const float3 origin = optixGetWorldRayOrigin();
     const float3 direction = optixGetWorldRayDirection();
 
-    const unsigned int prim_id = optixGetPrimitiveIndex();
-    float3 normal = params.gs_normals[prim_id];
-    if(dot(normal,direction)>0.){
-        optixIgnoreIntersection();
-        return;
-    }
+    // const unsigned int prim_id = optixGetPrimitiveIndex();
+    // float3 normal = params.gs_normals[prim_id];
+    // if(dot(normal,direction)>0.){
+    //     optixIgnoreIntersection();
+    //     return;
+    // }
 
     if(hitq_size == chunk_size){
         const Hit &chit = hitq[0];

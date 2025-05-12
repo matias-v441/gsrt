@@ -47,6 +47,7 @@ struct PyGaussiansTracer {
                         const torch::Tensor &ray_directions,
                         int width, int height,
                         bool compute_grad,
+                        bool white_background,
                         const torch::Tensor &dL_dC,
                         const torch::Tensor &out_rad,
                         const torch::Tensor &out_trans,
@@ -88,6 +89,7 @@ struct PyGaussiansTracer {
         tracing_params.num_its = reinterpret_cast<unsigned long long*>(num_its.data_ptr());
         tracing_params.num_its_bwd = reinterpret_cast<unsigned long long*>(num_its_bwd.data_ptr());
         tracing_params.distance = reinterpret_cast<float*>(distance.data_ptr());
+        tracing_params.white_background = white_background;
 
         tracing_params.compute_grad = compute_grad;
         tracing_params.dL_dC = reinterpret_cast<float3*>(dL_dC.data_ptr());

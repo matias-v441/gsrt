@@ -31,6 +31,8 @@ struct Params {
 
     bool compute_grad;
 
+    bool white_background;
+
     float3* grad_xyz;
     float4* grad_rotation;
     float3* grad_scale;

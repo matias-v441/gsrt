@@ -538,8 +538,7 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
     const float3 pos = params.gs_xyz[chit_id];
     const float opacity = params.gs_opacity[chit_id];
 
-    //float3 background{1.f,1.f,1.f};
-    float3 background{0.f,0.f,0.f};
+    float3 background = params.white_background? make_float3(1.f) : make_float3(0.f);
     const float3 dC_dresp = acc.transmittance*rad - (acc_full.radiance - acc.radiance)/max(eps,1.f-resp)
                             - background*acc_full.transmittance/max(eps,1.f-resp);
 

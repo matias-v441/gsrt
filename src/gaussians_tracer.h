@@ -44,6 +44,8 @@ struct TracingParams
     unsigned long long *num_its_bwd;
 
     bool compute_grad;
+    bool white_background;
+
     float3 *grad_xyz;
     float4 *grad_rotation;
     float3 *grad_scale;

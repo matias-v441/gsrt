@@ -34,9 +34,9 @@ from scene.dataset_readers import SceneInfo, getNerfppNorm, focal2fov  # type: i
 from scene.dataset_readers import CameraInfo as _old_CameraInfo  # type: ignore
 from scene.dataset_readers import storePly, fetchPly  # type: ignore
 from utils.general_utils import safe_state, build_rotation, get_expon_lr_func, inverse_sigmoid  # type: ignore
-from utils.graphics_utils import fov2focal  # type: ignore
+from utils.graphics_utils import fov2focal,BasicPointCloud  # type: ignore
 from utils.loss_utils import l1_loss, ssim  # type: ignore
-from utils.sh_utils import SH2RGB  # type: ignore
+from utils.sh_utils import SH2RGB,RGB2SH  # type: ignore
 from scene import Scene, sceneLoadTypeCallbacks  # type: ignore
 from utils import camera_utils  # type: ignore
 
@@ -183,9 +183,6 @@ def getNerfppNorm(cam_info):
 
 
 def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: str, white_background: bool = False, scale_coords=None):
-    if dataset is None:
-        return SceneInfo(None, [], [], nerf_normalization=dict(radius=None, translate=None), ply_path=None)
-    assert np.all(dataset["cameras"].camera_models == camera_model_to_int("pinhole")), "Only pinhole cameras supported"
 
     cam_infos = []
     for idx, extr in enumerate(dataset["cameras"].poses):
@@ -196,7 +193,6 @@ def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: 
         image_name = (
             os.path.relpath(str(dataset["image_paths"][idx]), str(dataset["image_paths_root"])) if dataset["image_paths"] is not None and dataset["image_paths_root"] is not None else os.path.basename(image_path)
         )
-
         w, h = dataset["cameras"].image_sizes[idx]
         im_data = dataset["images"][idx][:h, :w]
         assert im_data.dtype == np.uint8, "Gaussian Splatting supports images as uint8"
@@ -227,24 +223,26 @@ def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: 
 
     cam_infos = sorted(cam_infos.copy(), key=lambda x: x.image_name)
     nerf_normalization = getNerfppNorm(cam_infos)
-
+    print(f"nerf_normalization: {nerf_normalization}")
+    
     points3D_xyz = dataset["points3D_xyz"]
     if scale_coords is not None:
         points3D_xyz = points3D_xyz * scale_coords
-    points3D_rgb = dataset["points3D_rgb"]
+    points3D_rgb = dataset["points3D_rgb"] 
+    if points3D_xyz is not None:
+        points3D_rgb = points3D_rgb / 255.0
     if points3D_xyz is None and dataset["metadata"].get("id", None) == "blender":
         # https://github.com/graphdeco-inria/gaussian-splatting/blob/2eee0e26d2d5fd00ec462df47752223952f6bf4e/scene/dataset_readers.py#L221C4-L221C4
         num_pts = 100_000
         logging.info(f"generating random point cloud ({num_pts})...")
-
         # We create random points inside the bounds of the synthetic Blender scenes
         points3D_xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
         shs = np.random.random((num_pts, 3)) / 255.0
-        points3D_rgb = (SH2RGB(shs) * 255).astype(np.uint8)
+        points3D_rgb = SH2RGB(shs) 
 
-    #storePly(os.path.join(tempdir, "scene.ply"), points3D_xyz, points3D_rgb)
-    pcd = None#fetchPly(os.path.join(tempdir, "scene.ply"))
-    scene_info = SceneInfo(point_cloud=pcd, train_cameras=cam_infos, test_cameras=[], nerf_normalization=nerf_normalization,ply_path=None)# ply_path=os.path.join(tempdir, "scene.ply"))
+    pcd = BasicPointCloud(points=points3D_xyz,colors=points3D_rgb,normals=None)
+    scene_info = SceneInfo(point_cloud=pcd, train_cameras=None, test_cameras=[],
+                        nerf_normalization=nerf_normalization,ply_path=None)
     return scene_info
 
 
@@ -259,13 +257,16 @@ class _TraceFunction(torch.autograd.Function):
                               )
         out = tracer.trace_rays(setup['ray_origins'],setup['ray_directions'],
                                 setup['width'],setup['height'],
-                                False,torch.tensor(0),torch.tensor(0),torch.tensor(0),torch.tensor(0))
+                                False,setup['white_background'],torch.tensor(0),torch.tensor(0),torch.tensor(0),torch.tensor(0))
         ctx.setup = setup
         ctx.save_for_backward(out["radiance"],out["transmittance"],out["distance"])
 
         # print("hit_counts:", torch.sum(out["debug_map_0"]).item(), out["debug_map_0"].cpu())
 
-        return out["radiance"]# + out["transmittance"][:,None]
+        out_color = out["radiance"]
+        if setup['white_background']:
+            out_color = out_color + out["transmittance"][:,None]
+        return out_color
 
     @staticmethod
     def backward(ctx, *grad_outputs):
@@ -274,7 +275,7 @@ class _TraceFunction(torch.autograd.Function):
         out_rad,out_trans,out_dist = ctx.saved_tensors
         out = setup['tracer'].trace_rays(setup['ray_origins'],setup['ray_directions'],
                                          setup['width'],setup['height'],
-                                         True,dout_dC,out_rad,out_trans,out_dist)
+                                         True,setup['white_background'],dout_dC,out_rad,out_trans,out_dist)
         grad_xyz = out["grad_xyz"]
         grad_opacity = out["grad_opacity"][:,None]
         grad_scale = out["grad_scale"]
@@ -314,27 +315,27 @@ class GSRTMethod(Method):
             "init_num_points": 100000,
         }
 
+        if config_overrides.__contains__("white_bg"):
+            self.white_background = config_overrides["white_bg"]
+        else:
+            self.white_background = self.train_dataset["metadata"].get("white_background", False)
+
         self.setup_functions()
 
         self.checkpoint = checkpoint
 
-        self.scene_extent = None
-        if self.train_dataset is not None:
-            self.scene_extent = 5.2 #self.train_dataset['metadata']['expected_scene_scale']
         self._3dgs_data = config_overrides.get('3dgs_data',False)
         if self.checkpoint is None:
             scene_info = _convert_dataset_to_gaussian_splatting(train_dataset, "", True)
-            self.initialize_for_blender(scene_info)
+            self.initialize(scene_info)
         elif self._3dgs_data:
             self.load_3dgs_checkpoint()
         elif config_overrides.get('3dgrt_data',False):
             self.load_3dgrt_checkpoint()
         else:
             self.load_checkpoint()
-        self.spatial_lr_scale = 0
         self.tracer = GaussiansTracer(torch.device("cuda:0"))
         self.densif_stats = {"cloned":0,"split":0,"pruned":0,"total":0}
-
 
     def setup_functions(self):
         
@@ -347,12 +348,12 @@ class GSRTMethod(Method):
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def initialize_for_blender(self, scene_info:SceneInfo):
+    def initialize(self, scene_info:SceneInfo):
 
         torch.manual_seed(0)
-        n = self.hparams['init_num_points']
         #self._xyz = (torch.rand(n,3)*self.scene_extent*.5-self.scene_extent*.25).cuda()
-        xyz = np.random.random((n, 3)) * 2.6 - 1.3
+        xyz = scene_info.point_cloud.points
+        n = xyz.shape[0]
         self._xyz = torch.from_numpy(xyz).float().cuda()
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(xyz)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
@@ -363,24 +364,18 @@ class GSRTMethod(Method):
         self.active_sh_degree = 0
         self.max_sh_degree = 3
 
-        # -------------------
-        from utils.sh_utils import RGB2SH, SH2RGB
-        shs = np.random.random((n, 3)) / 255.0
-        pcd_cols = SH2RGB(shs)
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd_cols)).float().cuda())
+        fused_color = RGB2SH(torch.tensor(np.asarray(scene_info.point_cloud.colors)).float().cuda())
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
         self._features_dc = features[:,:,0:1].transpose(1, 2).contiguous()
         self._features_rest = features[:,:,1:].transpose(1, 2).contiguous()
-        print(f"FEATURES {self._features_dc.shape} {self._features_rest.shape}")
-        # -------------------
 
         self._color = (torch.ones(n,3)*torch.tensor([0.,1.,0.])).cuda() 
         self._resp = torch.zeros_like(self._opacity)
 
-        self.spatial_lr_scale = scene_info.nerf_normalization["radius"]
-        print(f"spatial_lr_scale {self.spatial_lr_scale}")
+        self.scene_extent = 7.802195549011231
+        self.scene_extent = scene_info.nerf_normalization["radius"]
 
 
     def load_checkpoint(self):
@@ -393,6 +388,7 @@ class GSRTMethod(Method):
         self._features_rest = ch['f_rest']
         self.active_sh_degree = ch['sh_deg']
         self.max_sh_degree = 3
+        self.scene_extent = 5.2
         self._color = ch['color']
         self._resp = torch.zeros_like(self._opacity)
         
@@ -407,20 +403,13 @@ class GSRTMethod(Method):
         self._features_rest = ch['features_specular'].detach().reshape(self._xyz.shape[0],15,3) #torch.zeros((self._xyz.shape[0],15,3)).float().cuda()
         self.active_sh_degree = ch['n_active_features']
         self.max_sh_degree = ch['max_n_features']
+        self.scene_extent = 5.2
         self._color = torch.zeros_like(self._xyz) #ch['color']
         self._resp = torch.zeros_like(self._opacity)
         self.ref_grads = torch.load(self.checkpoint.replace(".pt","_grad.pt"))
     
 
     def load_3dgs_checkpoint(self):
-        # gaussians,it = torch.load(self.checkpoint)
-        # self._xyz = gaussians[1].detach().cuda()
-        # self._scaling = self.scaling_inverse_activation(self.scaling_activation(gaussians[4].detach().cuda())*1.5)
-        # self._rotation = gaussians[5].detach().cuda()
-        # self._opacity = gaussians[6].detach().cuda()
-        # self._features_dc = gaussians[2].detach().cuda()
-        # self._features_rest = gaussians[3].detach().cuda()
-        # self.active_sh_degree = gaussians[0]
 
         gaussians = torch.load(self.checkpoint)
         self._xyz = gaussians['xyz'].detach().cuda()
@@ -430,7 +419,7 @@ class GSRTMethod(Method):
         self._features_dc = gaussians['f_dc'].detach().cuda()
         self._features_rest = gaussians['f_rest'].detach().cuda()
         self.active_sh_degree = gaussians['sh_deg']
-
+        self.scene_extent = 5.2
         self.max_sh_degree = 3
         self._color = (torch.ones(self._xyz.shape[0],3)*torch.tensor([0.,1.,0.])).cuda() 
         self._resp = torch.zeros_like(self._opacity)
@@ -491,8 +480,8 @@ class GSRTMethod(Method):
         for p in l:
             p['params'][0].requires_grad_(True)
 
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=position_lr_init*self.scene_extent, #*self.spatial_lr_scale,
-                                                    lr_final=position_lr_final*self.scene_extent, #*self.spatial_lr_scale,
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=position_lr_init*self.scene_extent, 
+                                                    lr_final=position_lr_final*self.scene_extent, 
                                                     lr_delay_mult=position_lr_delay_mult,
                                                     max_steps=position_lr_max_steps)
         
@@ -767,7 +756,13 @@ class GSRTMethod(Method):
         # viewpoint_cam = self._viewpoint_stack.pop(randint(0, len(self._viewpoint_stack) - 1))
         vp_id = self.viewpoint_ids[randint(0, self.viewpoint_ids.shape[0] - 1)] 
         train_cameras = self.train_dataset['cameras']
-        cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
+        #cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
+        #camera_th = cameras_th.__getitem__(vp_id)
+        def fit_distortion(x,name):
+            if x is not None and name == "distortion_parameters":
+                x = x[:,None,None,:]
+            return torch.from_numpy(x).contiguous().cuda()
+        cameras_th = train_cameras.apply(fit_distortion)
         camera_th = cameras_th.__getitem__(vp_id)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
 
@@ -783,6 +778,8 @@ class GSRTMethod(Method):
             res_x, res_y = 800,800 #camera_th.image_sizes
         else:
             ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
+            # ray_origins = torch.from_numpy(ray_origins).contiguous().cuda()
+            # ray_directions = torch.from_numpy(ray_directions).contiguous().cuda()
             res_x, res_y = camera_th.image_sizes
             ray_origins = ray_origins.float().squeeze()
             ray_directions = ray_directions.float().squeeze()
@@ -799,7 +796,8 @@ class GSRTMethod(Method):
                 'ray_directions':batch_ray_directions.contiguous(),
                 'width':batch_res_x,
                 'height':batch_res_y,
-                'sh_deg':self.active_sh_degree
+                'sh_deg':self.active_sh_degree,
+                'white_background':self.white_background
             }
         else:
             setup = {
@@ -811,13 +809,13 @@ class GSRTMethod(Method):
                 'sh_deg':self.active_sh_degree,
                 'mesh_vrt':None,#self.ref_grads["mesh_vrt"],
                 'mesh_tri':None,#self.ref_grads["mesh_tri"],
+                'white_background':self.white_background
             }
-        white_background = False
         gt_image = torch.from_numpy(self.train_dataset['images'][vp_id])/255
-        bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
-        # blender
-        gt_image_alpha = gt_image[:, :, 3:4]
-        gt_image = gt_image[:, :, :3]*gt_image_alpha + (1 - gt_image_alpha)*bg
+        bg = np.array([1, 1, 1]) if self.white_background else np.array([0, 0, 0])
+        if gt_image.shape[2] == 4: # has alpha
+            gt_image_alpha = gt_image[:, :, 3:4]
+            gt_image = gt_image[:, :, :3]*gt_image_alpha + (1 - gt_image_alpha)*bg
         gt_image = gt_image[:,:,:3]
         if check_grad:
             gt_image = self.ref_grads["ref_rgb"].squeeze(0)
@@ -858,9 +856,9 @@ class GSRTMethod(Method):
         # if iteration > 500:
         #     import matplotlib.pyplot as plt
         #     plt.figure()
-        #     plt.imshow(image.detach().cpu().reshape(res_x,res_y,3).numpy())
-        #     # plt.figure()
-        #     # plt.imshow(gt_image.detach().cpu().reshape(res_x,res_y,3).numpy())
+        #     plt.imshow(image.detach().cpu().reshape(res_y,res_x,3).numpy())
+        #     plt.figure()
+        #     plt.imshow(gt_image.detach().cpu().reshape(res_y,res_x,3).numpy())
         #     plt.show()
 
         # import matplotlib.pyplot as plt
@@ -885,9 +883,7 @@ class GSRTMethod(Method):
         # print("scaling grad:",None if self._scaling.grad is None else self._scaling.grad.max(dim=0).values)
 
         with torch.no_grad():
-            if (step >= 100 and step%100==0) or (step in [1,2,3,50]):
-                    print(f'saving checkpoint_{step}')
-                    self.save("gsrt_checkpoint",step)
+            
             if check_grad:
                 print("ref hit counts: ", self.ref_grads["hits_count"].sum().item(), self.ref_grads["hits_count"].cpu())
                 loss_ref = get_loss(self.ref_grads["pred_rgb"],self.ref_grads["ref_rgb"]).item()
@@ -985,7 +981,8 @@ class GSRTMethod(Method):
             'ray_directions':ray_directions.contiguous(),
             'width':res_x,
             'height':res_y,
-            'sh_deg':self.active_sh_degree
+            'sh_deg':self.active_sh_degree,
+            'white_background':self.white_background
         }
         retained_opacity = self.get_opacity
         retained_scaling = self.get_scaling
@@ -1068,10 +1065,10 @@ class GSRTMethod(Method):
             "method_id": "",  
 
             # Supported camera models (e.g., pinhole, opencv, ...)
-            "supported_camera_models": frozenset(("pinhole",)),
+            "supported_camera_models": frozenset(("pinhole","opencv_fisheye")),
 
             # Features required for training (e.g., color, points3D_xyz, ...)
-            "required_features": frozenset(("color",)),
+            "required_features": frozenset(("color","points3D_xyz")),
 
             # Declare supported outputs
             "supported_outputs": ("color","transmittance","debug_map_0","debug_map_1"),

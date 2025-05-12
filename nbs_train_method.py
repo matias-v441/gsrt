@@ -19,12 +19,14 @@ output_path = "output"
 # We will use the data from the "mipnerf360/bicycle" scene
 #data = "external://mipnerf360/bonsai"
 data = "external://blender/lego"
+#data = "/home/matbi/proj/Fisheye-GS/data/zipnerf-fisheye/alameda"
+#data = "/home/matbi/proj/Fisheye-GS/data/zipnerf-undistorted/alameda"
 
 # We use the exit stack to simplify the context management
 #stack = ExitStack().__enter__()
 
 # Prepare the output directory, and mount it if necessary (e.g., for docker backend)
-#stack.enter_context(backends.mount(output_path, output_path))
+#stack.enter_context(backends.mouxnp.atan(xnp.atan(xnp.atan(xnp.atan(xnp.atan(xnp.atan(nt(output_path, output_path))
 
 # Get the method specification for a registered method
 method_spec = get_method_spec(method_name)
@@ -44,7 +46,8 @@ train_dataset = load_dataset(data,
                              load_features=True)
 
 print(train_dataset.keys())
-print(train_dataset['metadata'])
+print(train_dataset['cameras'][0])
+print(train_dataset["metadata"])
 
 # Load eval dataset
 # test_dataset = load_dataset(data, 
@@ -59,19 +62,20 @@ print(train_dataset['metadata'])
 presets, config_overrides = get_presets_and_config_overrides(
     method_spec, train_dataset["metadata"])
 
-chpt_iter = 1
+chpt_iter = 15000
 track = False
 view_async = True
-use_chpt = True
+use_chpt = False
+save_chpt = False
 config_overrides["3dgs_data"] = False
-config_overrides["3dgrt_data"] = True
+config_overrides["3dgrt_data"] = False
+config_overrides["white_bg"] = False
+#config_overrides["init"] = "colmap"
 if use_chpt:
     model = method_cls(
-        #checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
-        #checkpoint=f'lego_3dgrt/lego-0804_235516/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
-        #checkpoint=f'lego_3dgrt/lego-1604_164539/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
-        #checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-1804_182847/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
-        checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-2204_020424/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
+        #checkpoint=f'gsrt_checkpoint_full/checkpoint_{chpt_iter}.pt',
+        checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
+        #checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-2204_020424/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         #checkpoint=f'/home/matbi/proj/3dgrut/runs/bonsai-2304_211030/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         train_dataset=train_dataset,
         config_overrides=config_overrides,
@@ -108,7 +112,7 @@ model_info = model.get_info()
 # In this example we override the total number of iterations
 # to make the training faster
 model_info["num_iterations"] = 30000
-start_iteration = chpt_iter if use_chpt else 0
+start_iteration = chpt_iter if use_chpt else 1
 
 import wandb
 import numpy as np
@@ -156,8 +160,11 @@ else:
 
 
 #with tqdm(total=model_info["num_iterations"]) as pbar:
-for step in range(start_iteration,model_info["num_iterations"]):
+for step in range(start_iteration,model_info["num_iterations"]+1):
     metrics = model.train_iteration(step)
+    if save_chpt and (step >= 100 and step%100==0) or (step in [1,2,3,50]):
+                    print(f'saving checkpoint_{step}')
+                    model.save("gsrt_checkpoint",step)
     #pbar.set_postfix({"psnr": f"{metrics['psnr']:.2f}"})
     vp_id = metrics['vp_id'] 
     scales = model.get_scaling.detach().cpu().numpy()
