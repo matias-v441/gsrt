@@ -18,9 +18,10 @@ output_path = "output"
 
 # We will use the data from the "mipnerf360/bicycle" scene
 #data = "external://mipnerf360/bonsai"
-data = "external://blender/lego"
-#data = "/home/matbi/proj/Fisheye-GS/data/zipnerf-fisheye/alameda"
+#data = "external://blender/lego"
+data = "/home/matbi/proj/Fisheye-GS/data/zipnerf-fisheye/alameda"
 #data = "/home/matbi/proj/Fisheye-GS/data/zipnerf-undistorted/alameda"
+#data = "external://blender/drums"
 
 # We use the exit stack to simplify the context management
 #stack = ExitStack().__enter__()
@@ -50,39 +51,43 @@ print(train_dataset['cameras'][0])
 print(train_dataset["metadata"])
 
 # Load eval dataset
-# test_dataset = load_dataset(data, 
-#                             split="test", 
-#                             features=method_info.get("required_features"),
-#                             supported_camera_models=method_info.get("supported_camera_models"),
-#                             load_features=True)
-# 
+test_dataset = load_dataset(data, 
+                            split="test", 
+                            features=method_info.get("required_features"),
+                            supported_camera_models=method_info.get("supported_camera_models"),
+                            load_features=True)
+
 
 # Each method can specify custom presets and config overrides
 # Apply config overrides for the train dataset
-presets, config_overrides = get_presets_and_config_overrides(
-    method_spec, train_dataset["metadata"])
+presets, config_overrides = get_presets_and_config_overrides(method_spec, train_dataset["metadata"])
 
-chpt_iter = 15000
+chpt_iter = 30000
+test = False
 track = False
-view_async = True
-use_chpt = False
+view_async = False
+use_chpt = True
 save_chpt = False
+chpt_dir = "drums_checkpoint"
 config_overrides["3dgs_data"] = False
 config_overrides["3dgrt_data"] = False
 config_overrides["white_bg"] = False
-#config_overrides["init"] = "colmap"
 if use_chpt:
     model = method_cls(
         #checkpoint=f'gsrt_checkpoint_full/checkpoint_{chpt_iter}.pt',
-        checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
+        checkpoint=f'{chpt_dir}/checkpoint_{chpt_iter}.pt',
+        #checkpoint=f'gsrt_checkpoint/checkpoint_{chpt_iter}.pt',
+        #checkpoint=f'gsrt_checkpoint_zipnerf/checkpoint_{chpt_iter}.pt',
         #checkpoint=f'/home/matbi/proj/3dgrut/runs/lego-2204_020424/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         #checkpoint=f'/home/matbi/proj/3dgrut/runs/bonsai-2304_211030/ours_{chpt_iter}/ckpt_{chpt_iter}.pt',
         train_dataset=train_dataset,
+        test_dataset=test_dataset,
         config_overrides=config_overrides,
     )
 else:
     model = method_cls(
         train_dataset=train_dataset,
+        test_dataset=test_dataset,
         config_overrides=config_overrides,
     )
 
@@ -113,6 +118,13 @@ model_info = model.get_info()
 # to make the training faster
 model_info["num_iterations"] = 30000
 start_iteration = chpt_iter if use_chpt else 1
+
+
+if test:
+    ssim, psnr, lpips = model.test()
+    print(f"PSNR: {psnr}, SSIM: {ssim}, LPIPS: {lpips}")
+# drums PSNR: 26.04239504814148, SSIM: 0.9543158429861068, LPIPS: 0.034241623212583366
+# PSNR: 26.115967416763304, SSIM: 0.9551858580112458, LPIPS: 0.032885719225741926
 
 import wandb
 import numpy as np
@@ -158,13 +170,14 @@ if view_async:
 else:
     viewer.run()
 
-
+import time
+start_time = time.time()
 #with tqdm(total=model_info["num_iterations"]) as pbar:
 for step in range(start_iteration,model_info["num_iterations"]+1):
     metrics = model.train_iteration(step)
-    if save_chpt and (step >= 100 and step%100==0) or (step in [1,2,3,50]):
+    if save_chpt and (step >= 29000 and step%100==0):# or (step in [1,2,3,50]):
                     print(f'saving checkpoint_{step}')
-                    model.save("gsrt_checkpoint",step)
+                    model.save(chpt_dir,step)
     #pbar.set_postfix({"psnr": f"{metrics['psnr']:.2f}"})
     vp_id = metrics['vp_id'] 
     scales = model.get_scaling.detach().cpu().numpy()
@@ -188,8 +201,10 @@ for step in range(start_iteration,model_info["num_iterations"]+1):
 
     # pbar.update()
 
+end_time = time.time()
+print(f"Training time: {(end_time - start_time)/60:.2f} minutes") # 185.36 min for 30K lego, 158.74 min for 30K drums
 # Save the model
-#model.save("gsrt_checkpoint",model_info["num_iterations"])
+model.save(chpt_dir,model_info["num_iterations"])
 # Create a minimal nb-info.json file such that the model can be loaded
 with open("nb-info.json", "w") as f:
     f.write(f'{{"method": "{method_name}"}}')

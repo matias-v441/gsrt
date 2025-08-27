@@ -1,0 +1,5 @@
+# @package _global_
+use_wandb: false
+evaluate: true
+train: false
+use_viewer: false

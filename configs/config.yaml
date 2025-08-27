@@ -1,0 +1,28 @@
+defaults:
+  - parameters: 3dgrt
+  - _self_
+  - mode: view
+
+method_name: gsrt
+use_wandb: false
+evaluate: false
+train: false
+view: true
+white_bg: false
+
+results_dir: chpt
+checkpoint: null
+start_iter: 1
+save_results: false
+save_interval: 100
+save_start_iter: 1000
+
+datasets:
+  blender: external://blender 
+  mipnerf: external://mipnerf360
+  zipnerf: /home/matbi/proj/Fisheye-GS/data/zipnerf-undistorted
+  zipnerf_fisheye: /home/matbi/proj/Fisheye-GS/data/zipnerf-fisheye
+
+dataset: blender
+scene: lego
+data_path: ${datasets[${dataset}]}/${scene}

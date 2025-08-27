@@ -39,6 +39,9 @@ from utils.loss_utils import l1_loss, ssim  # type: ignore
 from utils.sh_utils import SH2RGB,RGB2SH  # type: ignore
 from scene import Scene, sceneLoadTypeCallbacks  # type: ignore
 from utils import camera_utils  # type: ignore
+from utils.image_utils import psnr
+
+from lpipsPyTorch import lpips  # type: ignore
 
 from simple_knn._C import distCUDA2
 
@@ -307,10 +310,14 @@ class GSRTMethod(Method):
     def __init__(self, *,
                 checkpoint: str = None, 
                 train_dataset: Dataset = None,
+                test_dataset: Dataset = None,
                 config_overrides: Dict[str, Any] = None):
         super().__init__()
 
+        print(config_overrides)
+
         self.train_dataset = train_dataset
+        self.test_dataset = test_dataset
         self.hparams = {
             "init_num_points": 100000,
         }
@@ -336,6 +343,8 @@ class GSRTMethod(Method):
             self.load_checkpoint()
         self.tracer = GaussiansTracer(torch.device("cuda:0"))
         self.densif_stats = {"cloned":0,"split":0,"pruned":0,"total":0}
+        self.conf = config_overrides
+
 
     def setup_functions(self):
         
@@ -374,8 +383,8 @@ class GSRTMethod(Method):
         self._color = (torch.ones(n,3)*torch.tensor([0.,1.,0.])).cuda() 
         self._resp = torch.zeros_like(self._opacity)
 
-        self.scene_extent = 7.802195549011231
         self.scene_extent = scene_info.nerf_normalization["radius"]
+        print("SCENE_EXTENT",self.scene_extent)
 
 
     def load_checkpoint(self):
@@ -444,63 +453,41 @@ class GSRTMethod(Method):
         self.xyz_gradient_accum = torch.zeros(self.get_xyz.shape, device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda") 
 
-        self.densification_interval = 300 # !!!
-        self.prune_interval = 100 # !!!
-        self.opacity_reset_interval = 3000
-        self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
-        self.densify_clone_grad_threshold = 0.0002
-        self.densify_split_grad_threshold = 0.0002
-        self.densify_min_opacity = 0.01 # !!!
-        self.percent_dense = 0.01 
-        self.lambda_dssim = 0.2
+        for group in ["densification","loss"]:
+            for k,v in self.conf["parameters"][group].items():
+                self.__dict__[k] = v
+
         self.freeze_until_iter = -1
-
-        position_lr_init = 0.00016
-        position_lr_final = 0.0000016
-        position_lr_delay_mult = 0.01
-        position_lr_max_steps = 30_000
-        self.feature_lr = 0.0025
-        opacity_lr = 0.05 #!!!
-        scaling_lr = 0.005
-        rotation_lr = 0.001
-
-        # self.spatial_lr_scale = 0
+        print(self.conf["parameters"]["optimizer"])
+        from types import SimpleNamespace
+        optim_par = SimpleNamespace(**self.conf["parameters"]["optimizer"])
 
         l = [
-            {'params': [self._xyz], 'lr': position_lr_init, "name": "xyz"}, # * self.spatial_lr_scale
-            {'params': [self._features_dc], 'lr': self.feature_lr, "name": "f_dc"},
-            {'params': [self._features_rest], 'lr': self.feature_lr / 20.0, "name": "f_rest"},
-            {'params': [self._opacity], 'lr': opacity_lr, "name": "opacity"},
-            {'params': [self._scaling], 'lr': scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': rotation_lr, "name": "rotation"},
-            {'params': [self._color], 'lr': rotation_lr, "name": "color"},
-            {'params': [self._resp], 'lr': rotation_lr, "name": "resp"},
+            {'params': [self._xyz], 'lr': optim_par.position_lr_init, "name": "xyz"}, # * self.spatial_lr_scale
+            {'params': [self._features_dc], 'lr': optim_par.feature_lr, "name": "f_dc"},
+            {'params': [self._features_rest], 'lr': optim_par.feature_lr / 20.0, "name": "f_rest"},
+            {'params': [self._opacity], 'lr': optim_par.opacity_lr, "name": "opacity"},
+            {'params': [self._scaling], 'lr': optim_par.scaling_lr, "name": "scaling"},
+            {'params': [self._rotation], 'lr': optim_par.rotation_lr, "name": "rotation"},
+            {'params': [self._color], 'lr': optim_par.rotation_lr, "name": "color"},
+            {'params': [self._resp], 'lr': optim_par.rotation_lr, "name": "resp"},
         ]
         for p in l:
             p['params'][0].requires_grad_(True)
 
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=position_lr_init*self.scene_extent, 
-                                                    lr_final=position_lr_final*self.scene_extent, 
-                                                    lr_delay_mult=position_lr_delay_mult,
-                                                    max_steps=position_lr_max_steps)
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=optim_par.position_lr_init*self.scene_extent, 
+                                                    lr_final=optim_par.position_lr_final*self.scene_extent, 
+                                                    lr_delay_mult=optim_par.position_lr_delay_mult,
+                                                    max_steps=optim_par.position_lr_max_steps)
         
         self.optimizer = torch.optim.AdamW(l,lr=0.01, eps=1e-15)
         
     
     def update_learning_rate(self, iteration):
         for param_group in self.optimizer.param_groups:
-            if param_group["name"] == "f_dc":
-                param_group["lr"] = 0 if iteration <= self.freeze_until_iter else self.feature_lr
-            if param_group["name"] == "f_rest":
-                param_group["lr"] = 0 if iteration <= self.freeze_until_iter else self.feature_lr/20.
             if param_group["name"] == "xyz":
-                if iteration <= self.freeze_until_iter:
-                    param_group["lr"] = 0
-                else:
-                    lr = self.xyz_scheduler_args(iteration)
-                    param_group['lr'] = lr
-                #return lr
+                lr = self.xyz_scheduler_args(iteration)
+                param_group['lr'] = lr
 
     @property
     def get_opacity(self):
@@ -754,6 +741,7 @@ class GSRTMethod(Method):
         #     if any(not getattr(cam, "_patched", False) for cam in self._viewpoint_stack):
         #         raise RuntimeError("could not patch loadCam!")
         # viewpoint_cam = self._viewpoint_stack.pop(randint(0, len(self._viewpoint_stack) - 1))
+        random.seed(iteration)
         vp_id = self.viewpoint_ids[randint(0, self.viewpoint_ids.shape[0] - 1)] 
         train_cameras = self.train_dataset['cameras']
         #cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
@@ -872,6 +860,7 @@ class GSRTMethod(Method):
                             gt.reshape(1,res_y,res_x,3).permute(0,3,1,2))
             return (1.0 - self.lambda_dssim) * Ll1 + self.lambda_dssim * (1.0 - ssim_value)
         loss = get_loss(image, batch_gt_image if use_batch else gt_image)
+
         # print(torch.linalg.norm(image.detach()-self.ref_grads["pred_rgb"].squeeze(0).float().reshape(res_x*res_y,3)))
         # print(torch.max(torch.abs((image.detach()-self.ref_grads["pred_rgb"].squeeze(0).float().reshape(res_x*res_y,3)))))
         #loss = Ll1
@@ -884,46 +873,6 @@ class GSRTMethod(Method):
 
         with torch.no_grad():
             
-            if check_grad:
-                print("ref hit counts: ", self.ref_grads["hits_count"].sum().item(), self.ref_grads["hits_count"].cpu())
-                loss_ref = get_loss(self.ref_grads["pred_rgb"],self.ref_grads["ref_rgb"]).item()
-                print(loss.item(), loss_ref, self.ref_grads["loss"])
-                ref_fwd = self.ref_grads["pred_rgb"].squeeze(0).reshape(640000,3)
-                print(image-ref_fwd)
-                print("opacity", torch.abs(self._opacity.grad - self.ref_grads["density_grad"]))
-                print("opac_nonzero", torch.count_nonzero(self._opacity.grad))
-                print("dens_nonzero", torch.count_nonzero(self.ref_grads["density_grad"]))
-                import matplotlib.pyplot as plt
-                fig,ax = plt.subplots(4,1)
-                lt.plot(self._opacity.grad,ax=ax[0])
-                lt.plot(self.ref_grads["density_grad"],ax=ax[1])
-                print(self._opacity.grad)
-                print(self.ref_grads["density_grad"])
-                print("xyz", torch.norm(self._xyz.grad - self.ref_grads["positions_grad"], dim=1))
-                print("xyz_nonzero", torch.count_nonzero(self._xyz.grad))
-                print("pos_nonzero", torch.count_nonzero(self.ref_grads["positions_grad"]))
-                print(self._xyz.grad)
-                print(self.ref_grads["positions_grad"])
-                print("xyz_norm", (self._xyz.grad.norm(dim=1) - self.ref_grads["positions_grad"].norm(dim=1)))
-                print((self._xyz.grad.norm(dim=1)))
-                print((self.ref_grads["positions_grad"].norm(dim=1)))
-                lt.plot(self._xyz.grad.norm(dim=1),ax=ax[2])
-                lt.plot(self.ref_grads["positions_grad"].norm(dim=1),ax=ax[3])
-                #plt.show()
-                print("rotation", torch.norm(self._rotation.grad - self.ref_grads["rotation_grad"], dim=1))
-                print("rotation_nonzero", torch.count_nonzero(self._rotation.grad))
-                print("rotation_nonzero", torch.count_nonzero(self.ref_grads["rotation_grad"]))
-                print(self._rotation.grad)
-                print(self.ref_grads["rotation_grad"])
-                print("scaling", torch.norm(self._scaling.grad - self.ref_grads["scale_grad"], dim=1))
-                print(self._scaling.grad)
-                print(self.ref_grads["scale_grad"])
-                assert(torch.allclose(image,ref_fwd))
-                assert(torch.allclose(self._opacity.grad, self.ref_grads["density_grad"]))
-                assert(torch.allclose(self._xyz.grad, self.ref_grads["positions_grad"]))
-                assert(torch.allclose(self._rotation.grad, self.ref_grads["rotation_grad"]))
-                assert(torch.allclose(self._scaling.grad, self.ref_grads["scale_grad"]))
-
             # Log
             # if iteration % 10 == 0:
             #     print(f'Iter {iteration}, viewpoint {vp_id}, loss {loss.detach().item()}')
@@ -956,18 +905,62 @@ class GSRTMethod(Method):
         self.optimizer.zero_grad()
 
         self.densif_stats["total"] = self._xyz.shape[0]
+
+        psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
         
         return {"loss":loss.detach().item(),"vp_id":vp_id,
                 "out_image": image.detach().cpu().reshape(res_y,res_x,3).numpy(),
                 "densif_stats":self.densif_stats,
                 "pos_grad_norm":pos_grad_norm.cpu().numpy(),
-                "resp_grad":resp_grad.squeeze().cpu().numpy()}
+                "resp_grad":resp_grad.squeeze().cpu().numpy(),
+                "psnr":psnr}
+    
+    def test_iteration(self, step: int) -> Dict[str, float]:
+        test_cameras = self.test_dataset['cameras']
+        
+        image = torch.from_numpy(self.render(test_cameras, options={"vp_id":step})["color"]).cuda()
+        res_y, res_x = image.shape[:2]
+        
+        gt_image = torch.from_numpy(self.test_dataset['images'][step])/255
+        bg = np.array([1, 1, 1]) if self.white_background else np.array([0, 0, 0])
+        if gt_image.shape[2] == 4: # has alpha
+            gt_image_alpha = gt_image[:, :, 3:4]
+            gt_image = gt_image[:, :, :3]*gt_image_alpha + (1 - gt_image_alpha)*bg
+        gt_image = gt_image[:,:,:3]
+        gt_image = gt_image.float().reshape(res_x*res_y,3).cuda()
+        # import matplotlib.pyplot as plt
+        # plt.figure()
+        # plt.imshow(image.detach().cpu().reshape(res_y,res_x,3).numpy())
+        # plt.figure()
+        # plt.imshow(gt_image.detach().cpu().reshape(res_y,res_x,3).numpy())
+        # plt.show()
 
+        image  = image.reshape(1,res_y,res_x,3).permute(0,3,1,2)
+        gt_image = gt_image.reshape(1,res_y,res_x,3).permute(0,3,1,2)
+
+        ssim_value = ssim(image, gt_image)
+        psnr_value = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
+        lpips_value = lpips(image, gt_image)
+        return ssim_value.item(), psnr_value.item(), lpips_value.item()
+
+    def test(self):
+        mean_ssim, mean_psnr, mean_lpips = 0,0,0
+        n = len(self.test_dataset['cameras'])
+        for i in range(n):
+            ssim_val,psnr_val,lpips_val = self.test_iteration(i)
+            print(f"SSIM: {ssim_val}, PSNR: {psnr_val}, LPIPS: {lpips_val}")
+            mean_ssim += ssim_val
+            mean_psnr += psnr_val  
+            mean_lpips += lpips_val
+        return mean_ssim/n, mean_psnr/n, mean_lpips/n
 
     @torch.no_grad()
     def render(self, camera : Cameras, *, options=None):
-
-        camera_th = camera.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
+        def fit_distortion(x,name):
+            #if x is not None and name == "distortion_parameters":
+            #    x = x[:,None,None,:]
+            return torch.from_numpy(x).contiguous().cuda()
+        camera_th = camera.apply(fit_distortion)
         vp_id = 0 if options is None else options.get('vp_id',0)
         if len(camera_th) != 1:
             camera_th = camera_th.__getitem__(vp_id)
@@ -997,33 +990,6 @@ class GSRTMethod(Method):
         
         color = out_image.detach().cpu().reshape(res_y,res_x,3).numpy()
         return {"color":color}
-
-        # time_ms = 0
-        # nit = 1 if options is None else options.get('num_avg_it',1)
-        # for i in range(nit):
-        #     res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
-        #                                  ray_directions.float().squeeze(0).contiguous(),
-        #                                  res_x, res_y,
-        #                                  False,torch.tensor(0.))
-        #     time_ms += res["time_ms"]
-        # time_ms /= nit
-        # 
-        # color = res["radiance"].cpu().reshape(res_y,res_x,3).numpy()
-        # transmittance = res["transmittance"].cpu().reshape(res_y,res_x)[:,:,None].repeat(1,1,3).numpy()
-        # debug_map_0 = res["debug_map_0"].cpu().reshape(res_x,res_y,3).numpy()
-        # debug_map_1 = res["debug_map_1"].cpu().reshape(res_x,res_y,3).numpy()
-        # time_ms = res["time_ms"]
-        # num_its = res["num_its"]
-        # 
-        # return {
-        #     "color": color,# + transmittance,
-        #     "transmittance": transmittance,
-        #     "debug_map_0": debug_map_0,
-        #     "debug_map_1": debug_map_1,
-        #     "time_ms": time_ms,
-        #     "num_its": num_its,
-        #     "res_xy": (res_x,res_y) 
-        # }
 
     
     def save(self, path, it):
