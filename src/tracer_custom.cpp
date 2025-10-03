@@ -77,16 +77,18 @@ void GaussiansKDTree::build_rec(AABB V,
 
     node_aabbs.push_back(V);
 
-    if(num_part == 0){
+    if(evs[0].size()+evs[1].size()+evs[2].size() == 0){
         nodes[node_id].set_leaf_empty();
         return;
     }
 
     SplitPlane best_plane = find_best_plane(axis, V, evs, num_part);
     
-    if(depth == maxdepth() ||
-        best_plane.coord == vec_c(V.min,axis) || // same as no split
-        best_plane.cost > cost(0.f,1.f,0,num_part) // split is worse than no split
+    if(//depth == maxdepth()
+        //|| best_plane.coord == vec_c(V.min,axis) || // same as no split
+        //best_plane.cost > cost(0.f,1.f,0,num_part) // split is worse than no split
+        // || 
+         num_part <= MAX_LEAF_SIZE*2 // leaf is small enough -> make leaf
         ){
         nodes[node_id].set_data_id(leaves_data.size());
         fill_leaf_particles(leaves_data.emplace_back(),V,evs);
@@ -123,6 +125,32 @@ void GaussiansKDTree::build_check(){
         assert(nodes[i].cplane()==vec_c(node_aabbs[i+1].max,ax));
         assert(nodes[i].cplane()==vec_c(node_aabbs[nodes[i].right_id()].min,ax));
     }
+    std::vector<int> containment_stats(data.numgs);
+    for(int i = 0; i < nodes.size(); ++i){
+        if(!nodes[i].isleaf() || nodes[i].is_leaf_empty()) continue;
+        for(int part_id : leaves_data[nodes[i].data_id()].part_ids){
+            containment_stats[part_id]++;
+        }
+    }
+    int num_uncontained = 0;
+    int num_overcontained = 0;
+    int max_containment = 0;
+    for(int part_id = 0; part_id < data.numgs; ++part_id){
+        if(containment_stats[part_id] == 0){
+            num_uncontained++;
+        }
+        if(containment_stats[part_id] > 2){
+            num_overcontained++;
+        }
+        max_containment = std::max(max_containment, containment_stats[part_id]);
+    }
+    if(num_uncontained>0 || num_overcontained>0){
+        std::cout << "WARNING: some gaussians not contained or overcontained!" << std::endl;
+        std::cout << "num uncontained: " << num_uncontained << std::endl;
+        std::cout << "num overcontained: " << num_overcontained << std::endl;
+        std::cout << "max containment: " << max_containment << std::endl;
+        std::cout << "total gaussians: " << data.numgs << std::endl;
+    }
 }
 
 std::pair<axis_ev_ids,axis_ev_ids> GaussiansKDTree::split_events(
@@ -130,8 +158,9 @@ std::pair<axis_ev_ids,axis_ev_ids> GaussiansKDTree::split_events(
 
     axis_ev_ids left;
     axis_ev_ids right;
-    for(int k = 1; k < 3; ++k){
-        int ax = (split_ax+k)%3;
+    //for(int k = 1; k < 3; ++k){
+    //    int ax = (split_ax+k)%3;
+    for(int ax = 0; ax < 3; ++ax){
         for(int ev_id : evs[ax]){
             auto aabb = aabbs[ev2part_id(ev_id)];
             float start_ev = vec_c(aabb.min,split_ax);
@@ -144,14 +173,14 @@ std::pair<axis_ev_ids,axis_ev_ids> GaussiansKDTree::split_events(
             }
         }
     }
-    for(int ev_id : evs[split_ax]){
-        float ev = axis_events[split_ax][ev_id];
-        if(ev < csplit || (ev == csplit && is_end_ev(ev_id))){
-            left[split_ax].push_back(ev_id);
-        }else{
-            right[split_ax].push_back(ev_id);
-        }
-    }
+    //for(int ev_id : evs[split_ax]){
+    //    float ev = axis_events[split_ax][ev_id];
+    //    if(ev < csplit || (ev == csplit && is_end_ev(ev_id))){
+    //        left[split_ax].push_back(ev_id);
+    //    }else{
+    //        right[split_ax].push_back(ev_id);
+    //    }
+    //}
     return {left,right};
 }
 
@@ -205,12 +234,12 @@ GaussiansKDTree::SplitPlane GaussiansKDTree::find_best_plane(int axis, AABB V, a
     // std::cout << std::endl;
     int num_left=0,num_right=num_part;
     // add all nodes started outside the volume to the left side
-    for(int ev_id : evs[axis]){ 
-        auto aabb = aabbs[ev2part_id(ev_id)];
-        if(vec_c(aabb.min,axis)<vec_c(V.min,axis)){
-            ++num_left;
-        }
-    }
+    //for(int ev_id : evs[axis]){ 
+    //    auto aabb = aabbs[ev2part_id(ev_id)];
+    //    if(vec_c(aabb.min,axis)<vec_c(V.min,axis)){
+    //        ++num_left;
+    //    }
+    //}
     SplitPlane best_plane;
     best_plane.cost = __FLT_MAX__;
     // find split with minimum SAH
@@ -219,14 +248,19 @@ GaussiansKDTree::SplitPlane GaussiansKDTree::find_best_plane(int axis, AABB V, a
             --num_right;
         }
         float csplit = axis_events[axis][ev_id];
-        // printf("SAH ARGS %d %f %d %d\n",axis,csplit,num_left,num_right);
-        float cost = SAH(axis,csplit,V,num_left,num_right);
-        // std::cout << cost << std::endl;
-        if(cost<best_plane.cost){
-            best_plane.cost = cost;
-            best_plane.coord = csplit;
-            best_plane.num_left = num_left;
-            best_plane.num_right = num_right;
+        if(csplit > vec_c(V.min,axis) && csplit < vec_c(V.max,axis)){
+            // printf("SAH ARGS %d %f %d %d\n",axis,csplit,num_left,num_right);
+            //float cost = SAH(axis,csplit,V,num_left,num_right);
+            // std::cout << cost << std::endl;
+            //if(cost<best_plane.cost){
+            float cost = 0;
+            if(num_left >= num_right){
+                best_plane.cost = cost;
+                best_plane.coord = csplit;
+                best_plane.num_left = num_left;
+                best_plane.num_right = num_right;
+                break;
+            }
         }
         if(is_start_ev(ev_id)){
             ++num_left;
@@ -515,9 +549,9 @@ void GaussiansKDTree::rcast_gpu(const TracingParams& params){
 }
 
 void GaussiansKDTree::rcast_gpu_lin(const TracingParams& params){
-    std::cout << "rcast_gpu" << std::endl;
+    std::cout << "rcast_gpu_lin" << std::endl;
     if(cuda_traversal != nullptr){
-        cuda_traversal-(params);
+        cuda_traversal->rcast_lin(params);
     }else{
         std::cout << "not initialized" << std::endl;
     }

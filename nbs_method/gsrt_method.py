@@ -81,26 +81,22 @@ class GSRTMethod(Method):
 
     @torch.no_grad()
     def render(self, camera : Cameras, *, options=None):
-        # w,h = camera.image_sizes[0]
-        # res_x,res_y = w,h
-        # num_rays = res_x*res_y
-        # x,y=torch.meshgrid(torch.linspace(-w/2,w/2,res_x),torch.linspace(-h/2,h/2,res_y))
-        # focus = 1250.
-        # T = torch.from_numpy(camera.poses[0]).to(dtype=torch.float32)
-        # R = T[:,:3]
-        # t = T[:,3]
-        # c_im = torch.stack([x.flatten(),y.flatten(),-torch.ones(num_rays)*focus],dim=1)
-        # c_im /= c_im.norm(dim=1)[:,None]
-        # fx,fy,cx,cy = camera.intrinsics[0]
-        # c_im = c_im@R.T
-        # origin = -t
-        # ray_origins = origin.repeat(num_rays,1).to(self.device,dtype=torch.float32)
-        # ray_directions = c_im.to(self.device,dtype=torch.float32)
+        custom = False
+        T = torch.tensor([ 0.01610, -0.89595,  0.44386, -1.09488,
+                            -0.99987, -0.01443,  0.00715, -0.01763,
+                            0.00000, -0.44392, -0.89607,  2.21032]).reshape(3,4)
 
-        camera_th = camera.apply(lambda x, _: torch.from_numpy(x).contiguous().to(self.device))
+        def f(x,s):
+            if s == "poses" and custom:
+                return T.contiguous().to(self.device)
+            return torch.from_numpy(x).contiguous().to(self.device)
+        #camera_th = camera.apply(lambda x, _: torch.from_numpy(x).contiguous().to(self.device))
+        #camera_th = camera.apply(lambda x, _: T.contiguous().to(self.device))
+        camera_th = camera.apply(f)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
         res_x, res_y = camera.item().image_sizes
+        print(res_x,res_y)
 
 
         # import math
@@ -146,7 +142,7 @@ class GSRTMethod(Method):
                                              False)
             else:
                 draw_kd = False
-                tracer_type = 5
+                tracer_type = 6
                 res = self.tracer.trace_rays(ray_origins.float().squeeze(0).contiguous(),
                                             ray_directions.float().squeeze(0).contiguous(),
                                             res_x,res_y,
@@ -163,7 +159,7 @@ class GSRTMethod(Method):
         time_ms = res["time_ms"]
         num_its = res["num_its"]
         #print(num_its)
-        print(1000/time_ms, num_its/(res_x*res_y), res_x,res_y)
+        #print(1000/time_ms, num_its/(res_x*res_y), res_x,res_y)
         
         return {
             "color": color,# + transmittance,

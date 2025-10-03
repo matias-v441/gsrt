@@ -14,7 +14,7 @@ namespace kdtree_impl{
 		CUDA_Traversal(GaussiansKDTree&);
 		~CUDA_Traversal();
 		void rcast_kd_restart(const TracingParams&);
-		void rkast_lin(const TracingParams&);
+		void rcast_lin(const TracingParams&);
 	private:
 		
 		Node* d_nodes = 0;

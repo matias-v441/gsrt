@@ -330,7 +330,7 @@ public:
         if(tracing_params.tracer_type == 5)
             scene_as.rcast_gpu(tracing_params);
         if(tracing_params.tracer_type == 6)
-            scene_as.(tracing_params);
+            scene_as.rcast_gpu_lin(tracing_params);
     }
 private:
     kdtree_impl::GaussiansKDTree scene_as;

@@ -159,13 +159,17 @@ __device__ void draw_aabb(const TracingParams& params, const AABB* node_aabbs, i
             float3 dmin = pos-node_aabbs[node_id].min;
             float3 dmax = node_aabbs[node_id].max-pos;
             const float thr = .005f;
-            int c = 0;
+            int cmin = 0;
+            int cmax = 0;
             for(int k = 0; k < 3; ++k){
-                if(vec_c(dmin,k)<thr || vec_c(dmax,k)<thr){
-                    ++c;
+                if(vec_c(dmin,k)<thr){
+                    ++cmin;
+                }
+				if(vec_c(dmax,k)<thr){
+                    ++cmax;
                 }
             }
-            if(c == 2){
+            if(cmin == 2 || cmax == 2){
                 params.radiance[ray_id] = color;
             }
         }
@@ -264,7 +268,6 @@ __global__ void _rcast_kd_restart(
 				if(params.draw_kd) draw_aabb(params,node_aabbs,inode,i,{0.,0.,1.});
 				continue;
 			}
-			if(params.draw_kd) draw_aabb(params,node_aabbs,inode,i,{0.,1.,0.});
 			constexpr int hits_cap = GaussiansKDTree::MAX_LEAF_SIZE;
 			Hit hits[hits_cap];
 			unsigned int hitq_size = 0;
@@ -274,16 +277,19 @@ __global__ void _rcast_kd_restart(
 			const char* plane_masks = reinterpret_cast<const char*>(leaves_data+node.data_id()+1+leaf_size);
 
 			for(int k = 0; k < leaf_size; ++k){
-				if(plane_masks[i] & leaf_plane_mask)
-				 	continue; // -> this particle was processed in the previous leaf
+				//if(plane_masks[i] & leaf_plane_mask)
+				// 	continue; // -> this particle was processed in the previous leaf
 				
 				int part_id = part_ids[k];
 				float part_tmin,part_tmax;char _;
-				if(_intersectAABB(aabbs[part_id].min,aabbs[part_id].max,orig,dir,part_tmin,part_tmax,_))
+				if(_intersectAABB(aabbs[part_id].min,aabbs[part_id].max,orig,dir,part_tmin,part_tmax,_)
+					//&& part_tmin < leaf_tmin
+				)
 				{
 					float resp,tmaxresp;
 					_computeResponse(data,part_id,orig,dir,resp,tmaxresp);
-					if(resp >= resp_min){
+					if(tmaxresp >= leaf_tmin && tmaxresp <= leaf_tmax && 
+						resp >= resp_min){
 						if(hitq_size == hits_cap){
 							process_hit(hits[0],data,acc_trans,acc_rad,orig);
 							popHit(hits,hitq_size);
@@ -306,19 +312,20 @@ __global__ void _rcast_kd_restart(
 					break;
 				}
 			}
+			draw_aabb(params,node_aabbs,inode,i,{0.,1.,0.});
 			// set the particle mask for the next leaf
 			//leaf_plane_mask = n_leaf_plane_mask;
 			//leaf_plane_mask = next_plane_mask;
 		}
 	}
-	params.radiance[i] += acc_rad;
+	params.radiance[i] = acc_rad;
 }
 
 __global__ void _rcast_lin(
 	TracingParams params, AABB scene_vol,
 	const AABB* aabbs, const Node* nodes, const int* leaves_data,
 	GaussiansData data, const AABB* node_aabbs
-	) {
+	) { 
 
 	int i = (blockDim.y*blockIdx.y + threadIdx.y) * params.width
 			+ blockDim.x*blockIdx.x + threadIdx.x;
@@ -342,7 +349,7 @@ __global__ void _rcast_lin(
 	bool first_leaf = true;
 
 	unsigned int hitq_size = 0;
-	constexpr int hits_cap = GaussiansKDTree::MAX_LEAF_SIZE;
+	constexpr int hits_cap = GaussiansKDTree::MAX_LEAF_SIZE*4;
 	Hit hits[hits_cap];
 
 	for(int part_id = 0; part_id < data.numgs; ++part_id){
@@ -367,6 +374,91 @@ __global__ void _rcast_lin(
 				pushHit(hits,hitq_size,hit);
 			}
 		}
+		
+	}
+	while(hitq_size != 0){
+		process_hit(hits[0],data,acc_trans,acc_rad,orig);
+		popHit(hits,hitq_size);
+		if(acc_trans < trans_min){
+			tmax = sceneMax;
+			break;
+		}
+	}
+	params.radiance[i] = acc_rad;
+}
+
+__global__ void _rcast_leaves(
+	TracingParams params, AABB scene_vol,
+	const AABB* aabbs, const Node* nodes, const int* leaves_data,
+	GaussiansData data, const AABB* node_aabbs, int num_nodes
+	) { 
+
+	int i = (blockDim.y*blockIdx.y + threadIdx.y) * params.width
+			+ blockDim.x*blockIdx.x + threadIdx.x;
+	if(i >= params.width*params.height) return;
+	
+	const float3 orig = params.ray_origins[i];
+	const float3 dir = params.ray_directions[i];
+
+	float sceneMin,sceneMax;char _;
+	if(!_intersectAABB(scene_vol.min,scene_vol.max,orig,dir,sceneMin,sceneMax,_))
+		return;
+
+	float tmin,tmax;
+	tmin = tmax = sceneMin;
+	int iroot = 0; 
+	float3 acc_rad = make_float3(0.);
+	float acc_trans = 1.f;
+	char leaf_plane_mask = 0;
+	constexpr float trans_min = 0.001;
+	constexpr float resp_min = 0.01f;
+	bool first_leaf = true;
+
+	unsigned int hitq_size = 0;
+	constexpr int hits_cap = GaussiansKDTree::MAX_LEAF_SIZE*2;
+	Hit hits[hits_cap];
+	Hit leaves[GaussiansKDTree::MAX_LEAF_SIZE];
+	unsigned int leafq_size = 0;
+	float closest_tmin = sceneMax;
+	for(int node_id = 0; node_id < num_nodes; ++node_id){
+		// get particle intersections
+		Node node = nodes[node_id];
+		if (!node.isleaf() || node.is_leaf_empty()) continue;
+		float tmin,tmax; char _;
+		if (!_intersectAABB(node_aabbs[node_id].min, node_aabbs[node_id].max, orig, dir, tmin, tmax, _))
+			continue;
+		pushHit(leaves,leafq_size,Hit{node_id,tmin,tmax});
+	}
+	while(leafq_size != 0){
+		int node_id = leaves[0].id;
+		tmin = leaves[0].resp;
+		tmax = leaves[0].thit;
+		popHit(leaves,leafq_size);
+		Node leaf = nodes[node_id];
+		int leaf_size = *(leaves_data+leaf.data_id());
+		const int *part_ids = leaves_data+leaf.data_id()+1;
+		for(int k = 0; k < leaf_size; ++k){
+			int part_id = part_ids[k];
+			float part_tmin,part_tmax;char _;
+			if(_intersectAABB(aabbs[part_id].min,aabbs[part_id].max,orig,dir,part_tmin,part_tmax,_))
+			{
+				float resp,tmaxresp;
+				_computeResponse(data,part_id,orig,dir,resp,tmaxresp);
+				if(resp >= resp_min && tmaxresp >= tmin && tmaxresp <= tmax){
+					if(hitq_size == hits_cap){
+						process_hit(hits[0],data,acc_trans,acc_rad,orig);
+						popHit(hits,hitq_size);
+						if(acc_trans < trans_min){
+							tmax = sceneMax;
+							break;
+						}
+					}
+					atomicAdd(params.num_its,1ull);
+					Hit hit{part_id,resp,tmaxresp};
+					pushHit(hits,hitq_size,hit);
+				}
+			}
+		}
 		while(hitq_size != 0){
 			process_hit(hits[0],data,acc_trans,acc_rad,orig);
 			popHit(hits,hitq_size);
@@ -375,8 +467,95 @@ __global__ void _rcast_lin(
 				break;
 			}
 		}
+		params.radiance[i] = acc_rad;
+		draw_aabb(params,node_aabbs,node_id,i,{1.,0.,0.});
 	}
-	params.radiance[i] += acc_rad;
+}
+
+__global__ void _rcast_closest_leaves(
+	TracingParams params, AABB scene_vol,
+	const AABB* aabbs, const Node* nodes, const int* leaves_data,
+	GaussiansData data, const AABB* node_aabbs, int num_nodes
+	) { 
+
+	int i = (blockDim.y*blockIdx.y + threadIdx.y) * params.width
+			+ blockDim.x*blockIdx.x + threadIdx.x;
+	if(i >= params.width*params.height) return;
+	
+	const float3 orig = params.ray_origins[i];
+	const float3 dir = params.ray_directions[i];
+
+	float sceneMin,sceneMax;char _;
+	if(!_intersectAABB(scene_vol.min,scene_vol.max,orig,dir,sceneMin,sceneMax,_))
+		return;
+
+	float tmin,tmax;
+	tmin = tmax = sceneMin;
+	int iroot = 0; 
+	float3 acc_rad = make_float3(0.);
+	float acc_trans = 1.f;
+	char leaf_plane_mask = 0;
+	constexpr float trans_min = 0.001;
+	constexpr float resp_min = 0.01f;
+	bool first_leaf = true;
+
+	unsigned int hitq_size = 0;
+	constexpr int hits_cap = GaussiansKDTree::MAX_LEAF_SIZE*4;
+	Hit hits[hits_cap];
+	int closest_leaf_id = -1;
+	float closest_tmin = sceneMax;
+	for(int node_id = 0; node_id < num_nodes; ++node_id){
+		// get particle intersections
+		Node node = nodes[node_id];
+		if (!node.isleaf() || node.is_leaf_empty()) continue;
+		float tmin,tmax; char _;
+		if (_intersectAABB(node_aabbs[node_id].min, node_aabbs[node_id].max, orig, dir, tmin, tmax, _))
+		{
+			if (tmin < closest_tmin){
+				closest_leaf_id = node_id;
+				closest_tmin = tmin;
+			}
+		}
+	}
+	if(closest_leaf_id == -1) {
+		params.radiance[i] = {0.,1.,0.};
+		return;
+	}
+	Node closest_leaf = nodes[closest_leaf_id];
+	int leaf_size = *(leaves_data+closest_leaf.data_id());
+	const int *part_ids = leaves_data+closest_leaf.data_id()+1;
+	for(int k = 0; k < leaf_size; ++k){
+		int part_id = part_ids[k];
+		float part_tmin,part_tmax;char _;
+		if(_intersectAABB(aabbs[part_id].min,aabbs[part_id].max,orig,dir,part_tmin,part_tmax,_))
+		{
+			float resp,tmaxresp;
+			_computeResponse(data,part_id,orig,dir,resp,tmaxresp);
+			if(resp >= resp_min){
+				if(hitq_size == hits_cap){
+					process_hit(hits[0],data,acc_trans,acc_rad,orig);
+					popHit(hits,hitq_size);
+					if(acc_trans < trans_min){
+						tmax = sceneMax;
+						break;
+					}
+				}
+				atomicAdd(params.num_its,1ull);
+				Hit hit{part_id,resp,tmaxresp};
+				pushHit(hits,hitq_size,hit);
+			}
+		}
+	}
+	while(hitq_size != 0){
+		process_hit(hits[0],data,acc_trans,acc_rad,orig);
+		popHit(hits,hitq_size);
+		if(acc_trans < trans_min){
+			tmax = sceneMax;
+			break;
+		}
+	}
+	params.radiance[i] = acc_rad;
+	draw_aabb(params,node_aabbs,closest_leaf_id,i,{1.,0.,0.});
 }
 
 auto to_device (auto& dst, void* src, size_t size){
@@ -385,6 +564,7 @@ auto to_device (auto& dst, void* src, size_t size){
 };
 
 void CUDA_Traversal::rcast_kd_restart(const TracingParams& params){
+//#define PRESORT
 #ifdef PRESORT
 	float3 orig;
 	cudaMemcpy(&orig,params.ray_origins,sizeof(float3),cudaMemcpyDeviceToHost);
@@ -443,8 +623,11 @@ void CUDA_Traversal::rcast_lin(const TracingParams& params){
 		to_device(d_node_aabbs, node_aabbs.data(), node_aabbs.size()*sizeof(AABB));
 
 	printf("gpu_trace %dx%d %dx%d \n", blocks.x,blocks.y, threads.x,threads.y);
-	_rcast_lin<<<blocks,threads>>>(
-	 	params,scene_vol,d_aabbs,d_nodes,d_leaves,d_gaussians,d_node_aabbs
+	//_rcast_lin<<<blocks,threads>>>(
+	// 	params,scene_vol,d_aabbs,d_nodes,d_leaves,d_gaussians,d_node_aabbs
+	//	);
+	_rcast_leaves<<<blocks,threads>>>(
+	 	params,scene_vol,d_aabbs,d_nodes,d_leaves,d_gaussians,d_node_aabbs,static_cast<int>(nodes.size())
 		);
 	CHECK_CUDA(,true);
 }

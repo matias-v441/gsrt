@@ -171,7 +171,7 @@ struct PyTracerCustom {
         //CHECK_FLOAT_DIM(ray_directions,3);
         const size_t num_rays = ray_origins.numel() / 3;
         torch::Tensor radiance,transmittance,num_its,num_its_bwd;
-        if(tracer_type == 5){
+        if(tracer_type == 5 || tracer_type == 6){
             num_its = torch::zeros({1,1}, torch::device(device).dtype(torch::kInt64));
             radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
             transmittance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
