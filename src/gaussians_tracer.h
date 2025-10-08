@@ -56,6 +56,9 @@ struct TracingParams
     Matrix3x3 *grad_invRS;
 
     float3* dL_dC;
+
+    int tracer_type;
+    bool draw_kd;
 };
 
 class GaussiansAS {

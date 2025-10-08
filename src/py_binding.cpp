@@ -8,8 +8,7 @@
 
 #include "gaussians_tracer.h"
 #include "utils/exception.h"
-#include "utils/Matrix.h"
-using namespace util;
+#include "tracer_custom.h"
 
 namespace py = pybind11;
 using namespace pybind11::literals;  // to bring in the `_a` literal
@@ -180,10 +179,139 @@ struct PyGaussiansTracer {
     torch::Device device;
 };
 
+struct PyTracerCustom {
+    PyTracerCustom(const torch::Device &device) : device(device) {
+        if (!device.is_cuda()) {
+            throw Exception("The device argument must be a CUDA device.");
+        }
+        tracer = std::make_unique<TracerCustom>(device.index());
+    }
+    ~PyTracerCustom() {
+        tracer.reset();
+    }
+
+    py::dict trace_rays(const torch::Tensor &ray_origins,
+                        const torch::Tensor &ray_directions,
+                        int width, int height,
+                        int tracer_type,
+                        bool draw_kd,
+                        bool compute_grad,
+                        const torch::Tensor &dL_dC) {
+
+        torch::AutoGradMode enable_grad(false);
+        //CHECK_FLOAT_DIM(ray_origins,3);
+        //CHECK_FLOAT_DIM(ray_directions,3);
+        const size_t num_rays = ray_origins.numel() / 3;
+        torch::Tensor radiance,transmittance,num_its,num_its_bwd;
+        if(tracer_type == 5 || tracer_type == 6){
+            num_its = torch::zeros({1,1}, torch::device(device).dtype(torch::kInt64));
+            radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
+            transmittance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
+            num_its_bwd = torch::zeros({1,1}, torch::device(device).dtype(torch::kInt64));
+        }else{
+            num_its = torch::zeros({1,1}, torch::dtype(torch::kInt64));
+            radiance = torch::zeros({(long)num_rays, 3}, torch::dtype(torch::kFloat32));
+            transmittance = torch::zeros({(long)num_rays}, torch::dtype(torch::kFloat32));
+            num_its_bwd = torch::zeros({1,1}, torch::dtype(torch::kInt64));
+        }
+
+        const auto debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::dtype(torch::kFloat32));
+        const auto debug_map_1 = torch::zeros({(long)num_rays, 3}, torch::dtype(torch::kFloat32));
+
+        using namespace std::chrono;
+        const auto frame_start = high_resolution_clock::now();
+        TracingParams tracing_params{};
+        tracing_params.num_rays = num_rays;
+        tracing_params.width = width;
+        tracing_params.height = height;
+        tracing_params.ray_origins = reinterpret_cast<float3 *>(ray_origins.data_ptr());
+        tracing_params.ray_directions = reinterpret_cast<float3 *>(ray_directions.data_ptr());
+        tracing_params.radiance = reinterpret_cast<float3 *>(radiance.data_ptr());
+        tracing_params.transmittance = reinterpret_cast<float *>(transmittance.data_ptr());
+        tracing_params.debug_map_0 = nullptr;//reinterpret_cast<float3 *>(debug_map_0.data_ptr());
+        tracing_params.debug_map_1 = nullptr;//reinterpret_cast<float3 *>(debug_map_1.data_ptr());
+        tracing_params.num_its = reinterpret_cast<unsigned long long*>(num_its.data_ptr());
+        tracing_params.num_its_bwd = reinterpret_cast<unsigned long long*>(num_its_bwd.data_ptr());
+        tracing_params.tracer_type = tracer_type;
+        tracing_params.draw_kd = draw_kd;
+
+        tracer->trace_rays(tracing_params);
+
+        const auto frame_end = high_resolution_clock::now();
+        const double ms_frame = duration_cast<milliseconds>(frame_end-frame_start).count();
+
+        return py::dict("radiance"_a = radiance, "transmittance"_a = transmittance,
+                        "debug_map_0"_a = debug_map_0, "debug_map_1"_a = debug_map_1,
+                        "time_ms"_a = ms_frame,
+                        "num_its"_a = *reinterpret_cast<unsigned long*>(num_its.cpu().data_ptr()),
+                        "num_its_trav"_a = *reinterpret_cast<unsigned long*>(num_its_bwd.cpu().data_ptr())
+                        );
+    }
+
+    void set_parameters(const int cf_type,
+        const float K_T,
+        const float K_I,
+        const float k1,
+        const float k2){
+        as_params = ASParams{static_cast<CFType>(cf_type),K_T,K_I,k1,k2};
+    }
+
+    py::dict load_gaussians(
+        const torch::Tensor &xyz,
+        const torch::Tensor &rotation,
+        const torch::Tensor &scaling,
+        const torch::Tensor &opacity,
+        const torch::Tensor &sh,
+        const int sh_deg
+        ) {
+
+        CHECK_HOST_FLOAT_DIM(xyz,3);
+        CHECK_HOST_FLOAT_DIM(rotation,4);
+        CHECK_HOST_FLOAT_DIM(scaling,3);
+        CHECK_HOST_FLOAT_DIM(opacity,1);
+        CHECK_HOST_FLOAT_DIM(sh,3);
+        
+        particles.numgs = xyz.numel() / 3;
+        particles.xyz = reinterpret_cast<float3 *>(xyz.data_ptr());
+        particles.rotation = reinterpret_cast<float4 *>(rotation.data_ptr());
+        particles.scaling = reinterpret_cast<float3 *>(scaling.data_ptr());
+        particles.opacity = reinterpret_cast<float *>(opacity.data_ptr());
+        particles.sh = reinterpret_cast<float3 *>(sh.data_ptr());
+        particles.sh_deg = sh_deg;
+
+        using namespace std::chrono;
+        const auto start = high_resolution_clock::now();
+        tracer->load_gaussians(particles,as_params);
+
+        const auto end = high_resolution_clock::now();
+        const double ms_frame = duration_cast<milliseconds>(end-start).count();
+
+        return py::dict("time_ms"_a = ms_frame,
+                        "size"_a = tracer->get_size());
+    }
+
+    const torch::Device &get_device() const {
+        return this->device;
+    }
+
+   private:
+    std::unique_ptr<TracerCustom> tracer;
+    GaussiansData particles;
+    ASParams as_params;
+    torch::Device device;
+};
+
 PYBIND11_MODULE(gsrt_cpp_extension, m) {
     py::class_<PyGaussiansTracer>(m, "GaussiansTracer")
         .def(py::init<const torch::Device &>())
         .def_property_readonly("device", &PyGaussiansTracer::get_device)
         .def("trace_rays", &PyGaussiansTracer::trace_rays)
         .def("load_gaussians", &PyGaussiansTracer::load_gaussians);
+    py::class_<PyTracerCustom>(m, "TracerCustom")
+        .def(py::init<const torch::Device &>())
+        .def_property_readonly("device", &PyTracerCustom::get_device)
+        .def("trace_rays", &PyTracerCustom::trace_rays)
+        .def("load_gaussians", &PyTracerCustom::load_gaussians)
+        .def("set_parameters", &PyTracerCustom::set_parameters)
+        ;
 }

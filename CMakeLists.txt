@@ -108,8 +108,10 @@ cuda_compile_and_embed(ptx_code_file gaussians_tracer_ptx)
 add_link_options(-flto=auto)  # disables some warning
 pybind11_add_module(gsrt_cpp_extension
     src/gaussians_tracer.cpp
+    src/tracer_custom.cpp
     src/py_binding.cpp
     src/primitives.cu
+    src/tracer_cu.cu
     ${gaussians_tracer_ptx}
     )
 

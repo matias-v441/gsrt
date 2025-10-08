@@ -21,3 +21,4 @@ except ImportError as err_:
     cpp = LazyError()
 
 GaussiansTracer = cpp.GaussiansTracer
+TracerCustom = cpp.TracerCustom
