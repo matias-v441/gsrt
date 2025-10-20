@@ -1,22 +1,13 @@
-#include "gaussians_tracer.h"
+#include "pipeline.h"
 
-#include <optix_function_table_definition.h>
 #include <optix_stack_size.h>
 #include <optix_stubs.h>
-
 #include <cassert>
 #include <iostream>
-#include <iomanip>
-#include <cstring>
-
-#include "optix_types.h"
 #include "utils/exception.h"
-#include "utils/vec_math.h"
+#include "optix_types.h"
 
-#define GLM_FORCE_SWIZZLE
-#include <glm/glm.hpp>
-
-#include "primitives.h"
+using namespace gsrt::optix_tracer;
 
 // These structs represent the data blocks of our SBT records
 template <typename T>
@@ -28,67 +19,6 @@ struct SbtRecord {
 typedef SbtRecord<RayGenData> RayGenSbtRecord;
 typedef SbtRecord<MissData> MissSbtRecord;
 typedef SbtRecord<HitGroupData> HitGroupSbtRecord;
-
-static void context_log_cb(unsigned int level, const char *tag, const char *message, void * /*cbdata */) {
-    std::cerr << "[" << std::setw(2) << level << "][" << std::setw(12) << tag << "]: "
-              << message << "\n";
-}
-
-GaussiansTracer::GaussiansTracer(int8_t device)
-    : device(device){
-
-    // Initialize fields
-    context = nullptr;
-
-    // Switch to active device
-    CUDA_CHECK(cudaSetDevice(device));
-
-    // Load PTX first to make sure it exists
-
-    char log[2048];  // For error reporting from OptiX creation functions
-
-    //
-    // Initialize CUDA and create OptiX context
-    //
-    {
-        // Initialize CUDA
-        // Warning: CUDA should have been already initialized at this point!!
-        CUDA_CHECK(cudaFree(0));
-
-        // Initialize the OptiX API, loading all API entry points
-        OPTIX_CHECK(optixInit());
-
-        // Specify context options
-        OptixDeviceContextOptions options = {};
-        options.logCallbackFunction = &context_log_cb;
-        options.logCallbackLevel = 4;
-
-        // Associate a CUDA context (and therefore a specific GPU) with this
-        // device context
-        CUcontext cuCtx = 0;  // zero means take the current context
-        OPTIX_CHECK(optixDeviceContextCreate(cuCtx, &options, &context));
-    }
-
-    trace_rays_pipeline = std::move(TraceRaysPipeline(context, device));
-    gaussians_structure = std::move(GaussiansAS(context, device));
-}
-
-GaussiansTracer::GaussiansTracer(GaussiansTracer &&other)
-    : context(std::exchange(other.context, nullptr)),
-        device(std::exchange(other.device, -1)),
-        gaussians_structure(std::move(other.gaussians_structure)),
-        trace_rays_pipeline(std::move(other.trace_rays_pipeline)) {}
-
-GaussiansTracer::~GaussiansTracer() noexcept(false) {
-    // We call the destructor manually here to ensure correct destruction order
-    gaussians_structure.~GaussiansAS();
-    trace_rays_pipeline.~TraceRaysPipeline();
-
-    if (context != nullptr && device != -1) {
-        CUDA_CHECK(cudaSetDevice(device));
-        OPTIX_CHECK(optixDeviceContextDestroy(std::exchange(context, nullptr)));
-    }
-}
 
 
 TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t device)
@@ -416,7 +346,7 @@ TraceRaysPipeline::TraceRaysPipeline(TraceRaysPipeline &&other) noexcept
       
 
 
-TraceRaysPipeline::~TraceRaysPipeline() noexcept(false) {
+TraceRaysPipeline::~TraceRaysPipeline(){
     const auto device = std::exchange(this->device, -1);
     if (device == -1) {
         return;
@@ -458,11 +388,15 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
 
     {
         Params params;
+        int width, height;
         params.handle = gaussians_structure->gas_handle();
-
-        params.ray_origins = tracing_params.ray_origins;
-        params.ray_directions = tracing_params.ray_directions;
-
+        {
+            const auto& r = tracing_params.rays;
+            params.ray_origins = r.ray_origins;
+            params.ray_directions = r.ray_directions;
+            width = r.width;
+            height = r.height;
+        }
         auto& gs = gaussians_structure->gaussians();
         params.num_gs = gs.numgs;
         params.gs_xyz = gs.xyz;
@@ -471,158 +405,49 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.gs_opacity = gs.opacity;
         params.gs_sh = gs.sh;
         params.sh_deg = gs.sh_deg;
-        params.gs_color = gs.color;
-
+        //params.gs_color = gs.color;
         params.gs_normals = gaussians_structure->normals();
-
-        params.radiance = tracing_params.radiance;
-        params.transmittance = tracing_params.transmittance;
-        params.debug_map_0 = tracing_params.debug_map_0;
-        params.debug_map_1 = tracing_params.debug_map_1;
-        params.num_its = tracing_params.num_its;
-        params.num_its_bwd = tracing_params.num_its_bwd;
-        params.distance = tracing_params.distance;
-
-        params.compute_grad = tracing_params.compute_grad;
-        params.white_background = tracing_params.white_background;
-        params.grad_xyz = tracing_params.grad_xyz;
-        params.grad_rotation = tracing_params.grad_rotation;
-        params.grad_scale = tracing_params.grad_scale;
-        params.grad_opacity = tracing_params.grad_opacity;
-        params.grad_sh = tracing_params.grad_sh;
-        params.grad_resp = tracing_params.grad_resp;
-        params.grad_color = tracing_params.grad_color;
-        params.grad_invRS = tracing_params.grad_invRS;
-
-        params.dL_dC = tracing_params.dL_dC;
-
+        {
+            auto s = std::get<OptixRenderSettings>(tracing_params.settings);
+            params.compute_grad = s.compute_grad;
+            params.white_background = s.white_background;
+        }
+        {
+            const auto& o = tracing_params.output;
+            params.radiance = o.radiance;
+            params.transmittance = o.transmittance;
+            params.debug_map_0 = o.debug_map_0;
+            params.debug_map_1 = o.debug_map_1;
+            params.num_its = o.num_its;
+            params.num_its_bwd = o.num_its_bwd;
+            params.distance = o.distance;
+        }
+        if (std::get<OptixRenderSettings>(tracing_params.settings).compute_grad) {
+            assert(tracing_params.bp_out.has_value());
+            const auto& bp_out = tracing_params.bp_out.value();
+            params.grad_xyz = bp_out.grad_xyz;
+            params.grad_rotation = bp_out.grad_rotation;
+            params.grad_scale = bp_out.grad_scale;
+            params.grad_opacity = bp_out.grad_opacity;
+            params.grad_sh = bp_out.grad_sh;
+            params.grad_resp = bp_out.grad_resp;
+            //params.grad_color = bp_out.grad_color;
+            //params.grad_invRS = bp_out.grad_invRS;
+            assert(tracing_params.bp_in.has_value());
+            const auto& bp_in = tracing_params.bp_in.value();
+            params.dL_dC = bp_in.dL_dC;
+            //params.radiance = bp_in.radiance;
+            //params.transmittance = bp_in.transmittance;
+            //params.distance = bp_in.distance;
+        }
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),
             &params, sizeof(params),
             cudaMemcpyHostToDevice));
-        OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt,
-                                tracing_params.width, tracing_params.height, 1));
+        OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt, width, height, 1));
         //OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt,
         //                        tracing_params.num_rays, 1, 1));
         CUDA_SYNC_CHECK();
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }
-}
-
-
-GaussiansAS::GaussiansAS() noexcept
-    : device(-1),
-      context(nullptr),
-      gas_handle_(0),
-      d_gas_output_buffer(0),
-      d_vertices(0),
-      d_triangles(0),
-      d_normals(0) {}
-
-
-GaussiansAS::GaussiansAS(GaussiansAS &&other) noexcept
-    : device(std::exchange(other.device, -1)),
-      context(std::exchange(other.context, nullptr)),
-      gas_handle_(std::exchange(other.gas_handle_, 0)),
-      d_gas_output_buffer(std::exchange(other.d_gas_output_buffer, 0)),
-      d_vertices(std::exchange(other.d_vertices, 0)),
-      d_triangles(std::exchange(other.d_triangles, 0)),
-      d_normals(std::exchange(other.d_normals, nullptr)),
-      d_gaussians(std::exchange(other.d_gaussians, {})) {}
-
-void GaussiansAS::release() {
-    bool device_set = false;
-    auto device_free = [dev=device,&device_set](auto& dptr){
-        if (dptr != 0) {
-            if (!device_set) { CUDA_CHECK(cudaSetDevice(dev)); device_set = true; }
-            CUDA_CHECK(cudaFree(reinterpret_cast<void*>(dptr)));
-            dptr = 0;
-        }
-    };
-    device_free(d_gas_output_buffer);
-    gas_handle_ = 0;
-    device_free(d_vertices);
-    device_free(d_triangles);
-    device_free(d_normals);
-}
-
-GaussiansAS::~GaussiansAS() noexcept(false) {
-    if (this->device != -1) {
-        release();
-    }
-    const auto device = std::exchange(this->device, -1);
-}
-
-void GaussiansAS::build(void* vrt, size_t svrt, void* tri, size_t stri) {
-    release();
-
-    CUDA_CHECK(cudaSetDevice(device));
-
-    uint32_t nvert,ntriag;
-    alloc_buffers(d_gaussians.numgs,reinterpret_cast<float3**>(&d_vertices),nvert,reinterpret_cast<uint3**>(&d_triangles),ntriag);
-    construct_primitives(d_gaussians.numgs,d_gaussians.xyz,d_gaussians.opacity,d_gaussians.scaling,d_gaussians.rotation,
-        reinterpret_cast<float3*>(d_vertices), reinterpret_cast<uint3*>(d_triangles));
-
-    // assert(svrt/3 == nvert);
-    // assert(stri/3 == ntriag);
-    // d_vertices = reinterpret_cast<CUdeviceptr>(vrt);
-    // d_triangles = reinterpret_cast<CUdeviceptr>(tri);
-
-    // Use default options for simplicity.  In a real use case we would want to
-    // enable compaction, etc
-    OptixAccelBuildOptions accel_options = {};
-    accel_options.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
-    accel_options.operation = OPTIX_BUILD_OPERATION_BUILD;
-
-    // Our build input is a simple list of non-indexed triangle vertices
-    const uint32_t triangle_input_flags[1] = {OPTIX_GEOMETRY_FLAG_REQUIRE_SINGLE_ANYHIT_CALL};
-    OptixBuildInput triangle_input = {};
-    triangle_input.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
-    triangle_input.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
-    triangle_input.triangleArray.vertexBuffers = &d_vertices;
-    triangle_input.triangleArray.numVertices = nvert;//static_cast<uint32_t>(vertices.size());
-
-    triangle_input.triangleArray.indexFormat = OptixIndicesFormat::OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
-    triangle_input.triangleArray.indexBuffer = d_triangles;
-    triangle_input.triangleArray.numIndexTriplets = ntriag; //static_cast<uint32_t>(triangles.size());
-
-    triangle_input.triangleArray.flags = triangle_input_flags;
-    triangle_input.triangleArray.numSbtRecords = 1;
-
-    OptixAccelBufferSizes gas_buffer_sizes;
-    OPTIX_CHECK(optixAccelComputeMemoryUsage(
-        context,
-        &accel_options,
-        &triangle_input,
-        1,  // Number of build inputs
-        &gas_buffer_sizes));
-    CUdeviceptr d_temp_buffer_gas;
-    CUDA_CHECK(cudaMalloc(
-        reinterpret_cast<void **>(&d_temp_buffer_gas),
-        gas_buffer_sizes.tempSizeInBytes));
-
-    //std::cout << "GAS size " << gas_buffer_sizes.outputSizeInBytes/1024.f/1024.f << " MiB" << std::endl;
-
-    CUDA_CHECK(cudaMalloc(
-        reinterpret_cast<void **>(&d_gas_output_buffer),
-        gas_buffer_sizes.outputSizeInBytes));
-
-    OPTIX_CHECK(optixAccelBuild(
-        context,
-        0,  // CUDA stream
-        &accel_options,
-        &triangle_input,
-        1,  // num build inputs
-        d_temp_buffer_gas,
-        gas_buffer_sizes.tempSizeInBytes,
-        d_gas_output_buffer,
-        gas_buffer_sizes.outputSizeInBytes,
-        &gas_handle_,
-        nullptr,  // emitted property list
-        0         // num emitted properties
-        ));
-
-    // We can now free the scratch space buffer used during build and the vertex
-    // inputs, since they are not needed by our trivial shading method
-    CUDA_CHECK(cudaFree(reinterpret_cast<void *>(d_temp_buffer_gas)));
 }

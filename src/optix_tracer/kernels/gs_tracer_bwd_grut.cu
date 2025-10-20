@@ -2,9 +2,8 @@
 
 #include "optix_types.h"
 #include "utils/Matrix.h"
-#include "utils/auxiliary.h"
+#include "auxiliary.h"
 
-#include <vector>
 #include <float.h>
 
 using namespace util;

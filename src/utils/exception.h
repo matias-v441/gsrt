@@ -33,6 +33,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <iostream>
+#include "exception_cuda.h"
 
 //------------------------------------------------------------------------------
 //
@@ -107,59 +108,6 @@
             std::terminate();                                                  \
         }                                                                      \
     } while( 0 )
-
-//------------------------------------------------------------------------------
-//
-// CUDA error-checking
-//
-//------------------------------------------------------------------------------
-
-#define CUDA_CHECK( call )                                                     \
-    do                                                                         \
-    {                                                                          \
-        cudaError_t error = call;                                              \
-        if( error != cudaSuccess )                                             \
-        {                                                                      \
-            std::stringstream ss;                                              \
-            ss << "CUDA call (" << #call << " ) failed with error: '"          \
-               << cudaGetErrorString( error )                                  \
-               << "' (" __FILE__ << ":" << __LINE__ << ")\n";                  \
-            throw Exception( ss.str().c_str() );                        \
-        }                                                                      \
-    } while( 0 )
-
-
-#define CUDA_SYNC_CHECK()                                                      \
-    do                                                                         \
-    {                                                                          \
-        cudaDeviceSynchronize();                                               \
-        cudaError_t error = cudaGetLastError();                                \
-        if( error != cudaSuccess )                                             \
-        {                                                                      \
-            std::stringstream ss;                                              \
-            ss << "CUDA error on synchronize with error '"                     \
-               << cudaGetErrorString( error )                                  \
-               << "' (" __FILE__ << ":" << __LINE__ << ")\n";                  \
-            throw Exception( ss.str().c_str() );                        \
-        }                                                                      \
-    } while( 0 )
-
-
-// A non-throwing variant for use in destructors.
-// An iostream must be provided for output (e.g. std::cerr).
-#define CUDA_CHECK_NOTHROW( call )                                             \
-    do                                                                         \
-    {                                                                          \
-        cudaError_t error = (call);                                            \
-        if( error != cudaSuccess )                                             \
-        {                                                                      \
-            std::cerr << "CUDA call (" << #call << " ) failed with error: '"  \
-               << cudaGetErrorString( error )                                  \
-               << "' (" __FILE__ << ":" << __LINE__ << ")\n";                  \
-            std::terminate();                                                  \
-        }                                                                      \
-    } while( 0 )
-
 
 class Exception : public std::runtime_error
 {

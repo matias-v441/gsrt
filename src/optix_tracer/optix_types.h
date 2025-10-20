@@ -30,7 +30,6 @@ struct Params {
     unsigned long long* num_its_bwd;
 
     bool compute_grad;
-
     bool white_background;
 
     float3* grad_xyz;

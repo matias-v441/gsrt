@@ -254,13 +254,10 @@ class _TraceFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, setup, part_opac,part_xyz,part_scale,part_rot,part_sh, part_color,part_resp,inv_RS):
         tracer = setup['tracer']
-        tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,setup['sh_deg'],part_color,
-                              torch.tensor(0.),torch.tensor(0,dtype=torch.int32)
-                              #setup["mesh_vrt"],setup["mesh_tri"]
-                              )
-        out = tracer.trace_rays(setup['ray_origins'],setup['ray_directions'],
-                                setup['width'],setup['height'],
-                                False,setup['white_background'],torch.tensor(0),torch.tensor(0),torch.tensor(0),torch.tensor(0))
+        tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,setup['sh_deg'],{"type":"kd"})
+        out = tracer.trace_fwd(setup['ray_origins'],setup['ray_directions'],
+                               setup['width'],setup['height'],
+                               setup['white_background'])
         ctx.setup = setup
         ctx.save_for_backward(out["radiance"],out["transmittance"],out["distance"])
 
@@ -276,9 +273,10 @@ class _TraceFunction(torch.autograd.Function):
         dout_dC = grad_outputs[0]
         setup = ctx.setup
         out_rad,out_trans,out_dist = ctx.saved_tensors
-        out = setup['tracer'].trace_rays(setup['ray_origins'],setup['ray_directions'],
-                                         setup['width'],setup['height'],
-                                         True,setup['white_background'],dout_dC,out_rad,out_trans,out_dist)
+        out = setup['tracer'].trace_bwd(setup['ray_origins'],setup['ray_directions'],
+                                        setup['width'],setup['height'],
+                                        setup['white_background'],
+                                        dout_dC,out_rad,out_trans,out_dist)
         grad_xyz = out["grad_xyz"]
         grad_opacity = out["grad_opacity"][:,None]
         grad_scale = out["grad_scale"]
@@ -341,7 +339,7 @@ class GSRTMethod(Method):
             self.load_3dgrt_checkpoint()
         else:
             self.load_checkpoint()
-        self.tracer = GaussiansTracer(torch.device("cuda:0"))
+        self.tracer = GaussiansTracer()
         self.densif_stats = {"cloned":0,"split":0,"pruned":0,"total":0}
         self.conf = config_overrides
 
@@ -977,18 +975,14 @@ class GSRTMethod(Method):
             'sh_deg':self.active_sh_degree,
             'white_background':self.white_background
         }
-        retained_opacity = self.get_opacity
-        retained_scaling = self.get_scaling
-        retained_rotation = self.get_rotation
-        retained_features = self.get_features
-        inv_RS = self.build_scaling_rotation(1 / self.get_scaling, self._rotation).transpose(-1,-2).contiguous()
-        #inv_RS.retain_grad()
-        out_image = trace_function(setup, retained_opacity, self._xyz, 
-                            retained_scaling, retained_rotation,
-                            retained_features,
-                            self._color,self._resp,inv_RS)
+        if not self.tracer.has_gaussians():
+            self.tracer.load_gaussians(self._xyz, self.get_rotation, self.get_scaling, self.get_opacity,
+                                    self.get_features, self.active_sh_degree, {"type":"optix"})
+        out = self.tracer.trace_fwd(setup['ray_origins'],setup['ray_directions'],
+                               setup['width'],setup['height'],
+                               setup['white_background'])
         
-        color = out_image.detach().cpu().reshape(res_y,res_x,3).numpy()
+        color = out["radiance"].detach().cpu().reshape(res_y,res_x,3).numpy()
         return {"color":color}
 
     

@@ -152,3 +152,5 @@ run_log*
 nb-info.json
 lego_3dgrt/
 *.jpg
+_*
+*.sh
