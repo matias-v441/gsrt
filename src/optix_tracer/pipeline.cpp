@@ -430,15 +430,15 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
             params.grad_scale = bp_out.grad_scale;
             params.grad_opacity = bp_out.grad_opacity;
             params.grad_sh = bp_out.grad_sh;
-            params.grad_resp = bp_out.grad_resp;
+            //params.grad_resp = bp_out.grad_resp;
             //params.grad_color = bp_out.grad_color;
             //params.grad_invRS = bp_out.grad_invRS;
             assert(tracing_params.bp_in.has_value());
             const auto& bp_in = tracing_params.bp_in.value();
             params.dL_dC = bp_in.dL_dC;
-            //params.radiance = bp_in.radiance;
-            //params.transmittance = bp_in.transmittance;
-            //params.distance = bp_in.distance;
+            params.radiance = bp_in.radiance;
+            params.transmittance = bp_in.transmittance;
+            params.distance = bp_in.distance;
         }
         CUDA_CHECK(cudaMemcpy(
             reinterpret_cast<void *>(d_param),

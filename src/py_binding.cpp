@@ -49,7 +49,8 @@ struct PyTracer {
         CHECK_INPUT(device,sh,3);
 
         gsrt::ASParams params;
-        if(as_params.contains("type")){
+        if(!tracer){
+            assert(as_params.contains("type"));
             const std::string type = as_params["type"].cast<std::string>();
             if(type == "optix"){
                 params = gsrt::OptixASParams{};
@@ -114,8 +115,8 @@ struct PyTracer {
         RenderOutput output{};
         torch::Tensor num_its = torch::zeros({1,1}, torch::device(device).dtype(torch::kInt64));
         torch::Tensor radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
-        torch::Tensor transmittance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
-        torch::Tensor distance = torch::zeros({(long)num_rays}, torch::device(device).dtype(torch::kFloat32));
+        torch::Tensor transmittance = torch::zeros({(long)num_rays, 1}, torch::device(device).dtype(torch::kFloat32));
+        torch::Tensor distance = torch::zeros({(long)num_rays, 1}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
         output.num_its = reinterpret_cast<unsigned long long*>(num_its.data_ptr());
         output.radiance = reinterpret_cast<float3 *>(radiance.data_ptr());
@@ -196,15 +197,18 @@ struct PyTracer {
         long N = xyz.numel() / 3;
         torch::Tensor grad_xyz = torch::zeros({N,3}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor grad_opacity = torch::zeros({N}, torch::device(device).dtype(torch::kFloat32));
-        torch::Tensor resp = torch::zeros({N}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor grad_sh = torch::zeros({N,16,3}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor grad_scale = torch::zeros({N,3}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor grad_rotation = torch::zeros({N,4}, torch::device(device).dtype(torch::kFloat32));
+        assert(grad_xyz.is_contiguous());
+        assert(grad_opacity.is_contiguous());
+        assert(grad_sh.is_contiguous());
+        assert(grad_scale.is_contiguous());
+        assert(grad_rotation.is_contiguous());
         //grad_color = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
         //grad_invRS = torch::zeros({(long)particles.numgs,3,3}, torch::device(device).dtype(torch::kFloat32));
         bp_out.grad_xyz = reinterpret_cast<float3 *>(grad_xyz.data_ptr());
         bp_out.grad_opacity = reinterpret_cast<float*>(grad_opacity.data_ptr());
-        bp_out.grad_resp = reinterpret_cast<float*>(resp.data_ptr());
         bp_out.grad_sh = reinterpret_cast<float3*>(grad_sh.data_ptr());
         bp_out.grad_scale = reinterpret_cast<float3*>(grad_scale.data_ptr());
         bp_out.grad_rotation = reinterpret_cast<float4*>(grad_rotation.data_ptr());

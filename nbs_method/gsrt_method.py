@@ -5,17 +5,13 @@ from torch import nn
 import numpy as np
 
 import dataclasses
-import warnings
 import random
 import itertools
 import shlex
-import logging
 import copy
-from typing import Optional
 import os
 import tempfile
 import numpy as np
-from PIL import Image
 
 from nerfbaselines import (
     cameras,Method, MethodInfo, ModelInfo, RenderOutput, Cameras, camera_model_to_int, Dataset
@@ -26,281 +22,22 @@ from argparse import ArgumentParser
 
 from random import randint
 
-from utils.general_utils import PILtoTorch  # type: ignore
 from arguments import ModelParams, PipelineParams, OptimizationParams #  type: ignore
-from scene import GaussianModel # type: ignore
-import scene.dataset_readers  # type: ignore
-from scene.dataset_readers import SceneInfo, getNerfppNorm, focal2fov  # type: ignore
-from scene.dataset_readers import CameraInfo as _old_CameraInfo  # type: ignore
+#from scene import GaussianModel # type: ignore
 from scene.dataset_readers import storePly, fetchPly  # type: ignore
-from utils.general_utils import safe_state, build_rotation, get_expon_lr_func, inverse_sigmoid  # type: ignore
-from utils.graphics_utils import fov2focal,BasicPointCloud  # type: ignore
 from utils.loss_utils import l1_loss, ssim  # type: ignore
-from utils.sh_utils import SH2RGB,RGB2SH  # type: ignore
-from scene import Scene, sceneLoadTypeCallbacks  # type: ignore
-from utils import camera_utils  # type: ignore
 from utils.image_utils import psnr
 
 from lpipsPyTorch import lpips  # type: ignore
 
-from simple_knn._C import distCUDA2
-
 from extension import GaussiansTracer
-
+from method import Rays
+from method.training import Training
+from method.initialization import initialize
+from method.checkpoint import load_checkpoint
 
 import lovely_tensors as lt
 lt.monkey_patch()
-
-def flatten_hparams(hparams, *, separator: str = "/", _prefix: str = ""):
-    flat = {}
-    if dataclasses.is_dataclass(hparams):
-        hparams = {f.name: getattr(hparams, f.name) for f in dataclasses.fields(hparams)}
-    for k, v in hparams.items():
-        if _prefix:
-            k = f"{_prefix}{separator}{k}"
-        if isinstance(v, dict) or dataclasses.is_dataclass(v):
-            flat.update(flatten_hparams(v, _prefix=k, separator=separator).items())
-        else:
-            flat[k] = v
-    return flat
-
-
-def getProjectionMatrixFromOpenCV(w, h, fx, fy, cx, cy, znear, zfar):
-    z_sign = 1.0
-    P = torch.zeros((4, 4))
-    P[0, 0] = 2.0 * fx / w
-    P[1, 1] = 2.0 * fy / h
-    P[0, 2] = (2.0 * cx - w) / w
-    P[1, 2] = (2.0 * cy - h) / h
-    P[3, 2] = z_sign
-    P[2, 2] = z_sign * zfar / (zfar - znear)
-    P[2, 3] = -(zfar * znear) / (zfar - znear)
-    return P
-
-#
-# Patch Gaussian Splatting to include sampling masks
-# Also, fix cx, cy (ignored in gaussian-splatting)
-#
-# Patch loadCam to include sampling mask
-_old_loadCam = camera_utils.loadCam
-def loadCam(args, id, cam_info, resolution_scale):
-    camera = _old_loadCam(args, id, cam_info, resolution_scale)
-
-    sampling_mask = None
-    if cam_info.sampling_mask is not None:
-        sampling_mask = PILtoTorch(cam_info.sampling_mask, (camera.image_width, camera.image_height))
-    setattr(camera, "sampling_mask", sampling_mask)
-    setattr(camera, "_patched", True)
-
-    # Fix cx, cy (ignored in gaussian-splatting)
-    camera.focal_x = fov2focal(cam_info.FovX, camera.image_width)
-    camera.focal_y = fov2focal(cam_info.FovY, camera.image_height)
-    camera.cx = cam_info.cx
-    camera.cy = cam_info.cy
-    camera.projection_matrix = getProjectionMatrixFromOpenCV(
-        camera.image_width, 
-        camera.image_height, 
-        camera.focal_x, 
-        camera.focal_y, 
-        camera.cx, 
-        camera.cy, 
-        camera.znear, 
-        camera.zfar).transpose(0, 1).cuda()
-    camera.full_proj_transform = (camera.world_view_transform.unsqueeze(0).bmm(camera.projection_matrix.unsqueeze(0))).squeeze(0)
-
-    return camera
-camera_utils.loadCam = loadCam
-
-
-# Patch CameraInfo to add sampling mask
-class CameraInfo(_old_CameraInfo):
-    def __new__(cls, *args, sampling_mask=None, cx, cy, **kwargs):
-        self = super(CameraInfo, cls).__new__(cls, *args, **kwargs)
-        self.sampling_mask = sampling_mask
-        self.cx = cx
-        self.cy = cy
-        return self
-scene.dataset_readers.CameraInfo = CameraInfo
-
-
-def _load_caminfo(idx, pose, intrinsics, image_name, image_size, image=None, image_path=None, sampling_mask=None, scale_coords=None):
-    pose = np.copy(pose)
-    pose = np.concatenate([pose, np.array([[0, 0, 0, 1]], dtype=pose.dtype)], axis=0)
-    pose = np.linalg.inv(pose)
-    R = pose[:3, :3]
-    T = pose[:3, 3]
-    if scale_coords is not None:
-        T = T * scale_coords
-    R = np.transpose(R)
-
-    width, height = image_size
-    fx, fy, cx, cy = intrinsics
-    if image is None:
-        image = Image.fromarray(np.zeros((height, width, 3), dtype=np.uint8))
-    return CameraInfo(
-        uid=idx, R=R, T=T, 
-        FovX=focal2fov(float(fx), float(width)),
-        FovY=focal2fov(float(fy), float(height)),
-        image=image, image_path=image_path, image_name=image_name, 
-        width=int(width), height=int(height),
-        sampling_mask=sampling_mask,
-        cx=cx, cy=cy)
-
-
-def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
-    Rt = np.zeros((4, 4))
-    Rt[:3, :3] = R.transpose()
-    Rt[:3, 3] = t
-    Rt[3, 3] = 1.0
-
-    C2W = np.linalg.inv(Rt)
-    cam_center = C2W[:3, 3]
-    cam_center = (cam_center + translate) * scale
-    C2W[:3, 3] = cam_center
-    Rt = np.linalg.inv(C2W)
-    return np.float32(Rt)
-
-
-def getNerfppNorm(cam_info):
-    def get_center_and_diag(cam_centers):
-        cam_centers = np.hstack(cam_centers)
-        avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
-        center = avg_cam_center
-        dist = np.linalg.norm(cam_centers - center, axis=0, keepdims=True)
-        diagonal = np.max(dist)
-        return center.flatten(), diagonal
-
-    cam_centers = []
-
-    for cam in cam_info:
-        W2C = getWorld2View2(cam.R, cam.T)
-        C2W = np.linalg.inv(W2C)
-        cam_centers.append(C2W[:3, 3:4])
-
-    center, diagonal = get_center_and_diag(cam_centers)
-    radius = diagonal * 1.1
-
-    translate = -center
-
-    return {"translate": translate, "radius": radius}
-
-
-def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: str, white_background: bool = False, scale_coords=None):
-
-    cam_infos = []
-    for idx, extr in enumerate(dataset["cameras"].poses):
-        del extr
-        intrinsics = dataset["cameras"].intrinsics[idx]
-        pose = dataset["cameras"].poses[idx]
-        image_path = dataset["image_paths"][idx] if dataset["image_paths"] is not None else f"{idx:06d}.png"
-        image_name = (
-            os.path.relpath(str(dataset["image_paths"][idx]), str(dataset["image_paths_root"])) if dataset["image_paths"] is not None and dataset["image_paths_root"] is not None else os.path.basename(image_path)
-        )
-        w, h = dataset["cameras"].image_sizes[idx]
-        im_data = dataset["images"][idx][:h, :w]
-        assert im_data.dtype == np.uint8, "Gaussian Splatting supports images as uint8"
-        if im_data.shape[-1] == 4:
-            bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
-            norm_data = im_data / 255.0
-            arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + (1 - norm_data[:, :, 3:4]) * bg
-            im_data = np.array(arr * 255.0, dtype=np.uint8)
-        if not white_background and dataset["metadata"].get("id") == "blender":
-            warnings.warn("Blender scenes are expected to have white background. If the background is not white, please set white_background=True in the dataset loader.")
-        elif white_background and dataset["metadata"].get("id") != "blender":
-            warnings.warn("white_background=True is set, but the dataset is not a blender scene. The background may not be white.")
-        image = Image.fromarray(im_data)
-        sampling_mask = None
-        if dataset["sampling_masks"] is not None:
-            sampling_mask = Image.fromarray((dataset["sampling_masks"][idx] * 255).astype(np.uint8))
-
-        cam_info = _load_caminfo(
-            idx, pose, intrinsics, 
-            image_name=image_name, 
-            image_path=image_path,
-            image_size=(w, h),
-            image=image,
-            sampling_mask=sampling_mask,
-            scale_coords=scale_coords,
-        )
-        cam_infos.append(cam_info)
-
-    cam_infos = sorted(cam_infos.copy(), key=lambda x: x.image_name)
-    nerf_normalization = getNerfppNorm(cam_infos)
-    print(f"nerf_normalization: {nerf_normalization}")
-    
-    points3D_xyz = dataset["points3D_xyz"]
-    if scale_coords is not None:
-        points3D_xyz = points3D_xyz * scale_coords
-    points3D_rgb = dataset["points3D_rgb"] 
-    if points3D_xyz is not None:
-        points3D_rgb = points3D_rgb / 255.0
-    if points3D_xyz is None and dataset["metadata"].get("id", None) == "blender":
-        # https://github.com/graphdeco-inria/gaussian-splatting/blob/2eee0e26d2d5fd00ec462df47752223952f6bf4e/scene/dataset_readers.py#L221C4-L221C4
-        num_pts = 100_000
-        logging.info(f"generating random point cloud ({num_pts})...")
-        # We create random points inside the bounds of the synthetic Blender scenes
-        points3D_xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
-        shs = np.random.random((num_pts, 3)) / 255.0
-        points3D_rgb = SH2RGB(shs) 
-
-    pcd = BasicPointCloud(points=points3D_xyz,colors=points3D_rgb,normals=None)
-    scene_info = SceneInfo(point_cloud=pcd, train_cameras=None, test_cameras=[],
-                        nerf_normalization=nerf_normalization,ply_path=None)
-    return scene_info
-
-
-class _TraceFunction(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, setup, part_opac,part_xyz,part_scale,part_rot,part_sh, part_color,part_resp,inv_RS):
-        tracer = setup['tracer']
-        tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,setup['sh_deg'],{"type":"kd"})
-        out = tracer.trace_fwd(setup['ray_origins'],setup['ray_directions'],
-                               setup['width'],setup['height'],
-                               setup['white_background'])
-        ctx.setup = setup
-        ctx.save_for_backward(out["radiance"],out["transmittance"],out["distance"])
-
-        # print("hit_counts:", torch.sum(out["debug_map_0"]).item(), out["debug_map_0"].cpu())
-
-        out_color = out["radiance"]
-        if setup['white_background']:
-            out_color = out_color + out["transmittance"][:,None]
-        return out_color
-
-    @staticmethod
-    def backward(ctx, *grad_outputs):
-        dout_dC = grad_outputs[0]
-        setup = ctx.setup
-        out_rad,out_trans,out_dist = ctx.saved_tensors
-        out = setup['tracer'].trace_bwd(setup['ray_origins'],setup['ray_directions'],
-                                        setup['width'],setup['height'],
-                                        setup['white_background'],
-                                        dout_dC,out_rad,out_trans,out_dist)
-        grad_xyz = out["grad_xyz"]
-        grad_opacity = out["grad_opacity"][:,None]
-        grad_scale = out["grad_scale"]
-        grad_rot = out["grad_rot"]
-        grad_sh = out["grad_sh"]
-        grad_color = out["grad_color"]
-        grad_invRS = out["grad_invRS"]
-        for grad,n in [(grad_xyz,"grad_xyz"),
-                       (grad_opacity,"grad_opacity"),
-                       (grad_scale,"grad_scale"),
-                       (grad_rot,"grad_rot"),
-                       (grad_sh,"grad_sh"),
-                       (grad_color,"grad_color"),
-                       (grad_invRS,"grad_invRS")]:
-            nan_mask = torch.isnan(grad)
-            if torch.any(nan_mask):
-                print(f"found NaN grad in {n}")
-            grad[nan_mask] = 0.
-        return None,grad_opacity,grad_xyz,grad_scale,grad_rot,grad_sh,grad_color,out["grad_resp"][:,None],grad_invRS
-
-        
-def trace_function(*args):
-    out = _TraceFunction.apply(*args)
-    return out
 
 
 class GSRTMethod(Method):
@@ -312,426 +49,23 @@ class GSRTMethod(Method):
                 config_overrides: Dict[str, Any] = None):
         super().__init__()
 
-        print(config_overrides)
-
+        self.cfg = config_overrides
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
-        self.hparams = {
-            "init_num_points": 100000,
-        }
-
-        if config_overrides.__contains__("white_bg"):
-            self.white_background = config_overrides["white_bg"]
+        if checkpoint is not None:
+            self.model = load_checkpoint(self.cfg)
         else:
-            self.white_background = self.train_dataset["metadata"].get("white_background", False)
-
-        self.setup_functions()
-
-        self.checkpoint = checkpoint
-
-        self._3dgs_data = config_overrides.get('3dgs_data',False)
-        if self.checkpoint is None:
-            scene_info = _convert_dataset_to_gaussian_splatting(train_dataset, "", True)
-            self.initialize(scene_info)
-        elif self._3dgs_data:
-            self.load_3dgs_checkpoint()
-        elif config_overrides.get('3dgrt_data',False):
-            self.load_3dgrt_checkpoint()
-        else:
-            self.load_checkpoint()
+            self.model = initialize(self.cfg, self.train_dataset)
+        if train_dataset is not None:
+            self.training = Training(self.cfg, self.model, train_dataset)
+            self.viewpoint_ids = torch.arange(len(self.train_dataset['cameras']))
         self.tracer = GaussiansTracer()
-        self.densif_stats = {"cloned":0,"split":0,"pruned":0,"total":0}
-        self.conf = config_overrides
 
-
-    def setup_functions(self):
-        
-        self.scaling_activation = torch.exp
-        self.scaling_inverse_activation = torch.log
-
-        self.opacity_activation = torch.sigmoid
-        self.inverse_opacity_activation = inverse_sigmoid
-
-        self.rotation_activation = torch.nn.functional.normalize
-
-
-    def initialize(self, scene_info:SceneInfo):
-
-        torch.manual_seed(0)
-        #self._xyz = (torch.rand(n,3)*self.scene_extent*.5-self.scene_extent*.25).cuda()
-        xyz = scene_info.point_cloud.points
-        n = xyz.shape[0]
-        self._xyz = torch.from_numpy(xyz).float().cuda()
-        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(xyz)).float().cuda()), 0.0000001)
-        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
-        self._scaling = scales #torch.zeros(n,3).cuda()
-        self._rotation = torch.hstack([torch.ones(n,1),torch.zeros(n,3)]).cuda()
-        self._opacity = self.inverse_opacity_activation(0.1 * torch.ones(n,1)).cuda() 
-
-        self.active_sh_degree = 0
-        self.max_sh_degree = 3
-
-        fused_color = RGB2SH(torch.tensor(np.asarray(scene_info.point_cloud.colors)).float().cuda())
-        features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-        features[:, :3, 0 ] = fused_color
-        features[:, 3:, 1:] = 0.0
-        self._features_dc = features[:,:,0:1].transpose(1, 2).contiguous()
-        self._features_rest = features[:,:,1:].transpose(1, 2).contiguous()
-
-        self._color = (torch.ones(n,3)*torch.tensor([0.,1.,0.])).cuda() 
-        self._resp = torch.zeros_like(self._opacity)
-
-        self.scene_extent = scene_info.nerf_normalization["radius"]
-        print("SCENE_EXTENT",self.scene_extent)
-
-
-    def load_checkpoint(self):
-        ch = torch.load(self.checkpoint)
-        self._xyz = ch['xyz']
-        self._scaling = ch['scaling']
-        self._rotation = ch['rotation']
-        self._opacity = ch['opacity']
-        self._features_dc = ch['f_dc']
-        self._features_rest = ch['f_rest']
-        self.active_sh_degree = ch['sh_deg']
-        self.max_sh_degree = 3
-        self.scene_extent = 5.2
-        self._color = ch['color']
-        self._resp = torch.zeros_like(self._opacity)
-        
-
-    def load_3dgrt_checkpoint(self):
-        ch = torch.load(self.checkpoint)
-        self._xyz = ch['positions'].detach()
-        self._scaling = ch['scale'].detach()
-        self._rotation = ch['rotation'].detach()
-        self._opacity = ch['density'].detach()
-        self._features_dc = ch['features_albedo'].detach().reshape(self._xyz.shape[0],1,3) #torch.zeros((self._xyz.shape[0],1,3)).float().cuda()
-        self._features_rest = ch['features_specular'].detach().reshape(self._xyz.shape[0],15,3) #torch.zeros((self._xyz.shape[0],15,3)).float().cuda()
-        self.active_sh_degree = ch['n_active_features']
-        self.max_sh_degree = ch['max_n_features']
-        self.scene_extent = 5.2
-        self._color = torch.zeros_like(self._xyz) #ch['color']
-        self._resp = torch.zeros_like(self._opacity)
-        self.ref_grads = torch.load(self.checkpoint.replace(".pt","_grad.pt"))
-    
-
-    def load_3dgs_checkpoint(self):
-
-        gaussians = torch.load(self.checkpoint)
-        self._xyz = gaussians['xyz'].detach().cuda()
-        self._scaling = self.scaling_inverse_activation(self.scaling_activation(gaussians['scaling'].detach().cuda())*1.5)
-        self._rotation = gaussians['rotation'].detach().cuda()
-        self._opacity = gaussians['opacity'].detach().cuda()
-        self._features_dc = gaussians['f_dc'].detach().cuda()
-        self._features_rest = gaussians['f_rest'].detach().cuda()
-        self.active_sh_degree = gaussians['sh_deg']
-        self.scene_extent = 5.2
-        self.max_sh_degree = 3
-        self._color = (torch.ones(self._xyz.shape[0],3)*torch.tensor([0.,1.,0.])).cuda() 
-        self._resp = torch.zeros_like(self._opacity)
-
-    def rendering_setup(self):
-        self.retained_scaling = self.get_scaling
-        self.retained_opacity = self.get_opacity
-        self.retained_sh = self.get_features
-        self.retained_rotation = self.get_rotation
-        self.tracer.load_gaussians(self._xyz,self.retained_rotation,self.retained_scaling,
-                                   self.retained_opacity,self.retained_sh,
-                                   self.active_sh_degree,self._color)
-
-    def oneupSHdegree(self):
-        if self.active_sh_degree < self.max_sh_degree:
-            self.active_sh_degree += 1
-
-    def training_setup(self):
-
-        self.viewpoint_ids = torch.arange(len(self.train_dataset['cameras']))
-
-        self.xyz_gradient_accum = torch.zeros(self.get_xyz.shape, device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda") 
-
-        for group in ["densification","loss"]:
-            for k,v in self.conf["parameters"][group].items():
-                self.__dict__[k] = v
-
-        self.freeze_until_iter = -1
-        print(self.conf["parameters"]["optimizer"])
-        from types import SimpleNamespace
-        optim_par = SimpleNamespace(**self.conf["parameters"]["optimizer"])
-
-        l = [
-            {'params': [self._xyz], 'lr': optim_par.position_lr_init, "name": "xyz"}, # * self.spatial_lr_scale
-            {'params': [self._features_dc], 'lr': optim_par.feature_lr, "name": "f_dc"},
-            {'params': [self._features_rest], 'lr': optim_par.feature_lr / 20.0, "name": "f_rest"},
-            {'params': [self._opacity], 'lr': optim_par.opacity_lr, "name": "opacity"},
-            {'params': [self._scaling], 'lr': optim_par.scaling_lr, "name": "scaling"},
-            {'params': [self._rotation], 'lr': optim_par.rotation_lr, "name": "rotation"},
-            {'params': [self._color], 'lr': optim_par.rotation_lr, "name": "color"},
-            {'params': [self._resp], 'lr': optim_par.rotation_lr, "name": "resp"},
-        ]
-        for p in l:
-            p['params'][0].requires_grad_(True)
-
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=optim_par.position_lr_init*self.scene_extent, 
-                                                    lr_final=optim_par.position_lr_final*self.scene_extent, 
-                                                    lr_delay_mult=optim_par.position_lr_delay_mult,
-                                                    max_steps=optim_par.position_lr_max_steps)
-        
-        self.optimizer = torch.optim.AdamW(l,lr=0.01, eps=1e-15)
-        
-    
-    def update_learning_rate(self, iteration):
-        for param_group in self.optimizer.param_groups:
-            if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration)
-                param_group['lr'] = lr
-
-    @property
-    def get_opacity(self):
-        return self.opacity_activation(self._opacity)
-
-    @property
-    def get_scaling(self):
-        return self.scaling_activation(self._scaling)
-
-    @property
-    def get_rotation(self):
-        return self.rotation_activation(self._rotation)
-        #return self._rotation
-
-    @property
-    def get_xyz(self):
-        return self._xyz 
-
-    @property
-    def get_features(self):
-        features_dc = self._features_dc
-        features_rest = self._features_rest
-        return torch.cat((features_dc, features_rest), dim=1) 
-
-
-    def reset_opacity(self):
-        opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01)) 
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
-        self._opacity = optimizable_tensors["opacity"]
-   
-
-    def replace_tensor_to_optimizer(self, tensor, name):
-        optimizable_tensors = {}
-        for group in self.optimizer.param_groups:
-            if group["name"] == name:
-                stored_state = self.optimizer.state.get(group['params'][0], None)
-                stored_state["exp_avg"] = torch.zeros_like(tensor)
-                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
-
-                del self.optimizer.state[group['params'][0]]
-                group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group['params'][0]] = stored_state
-
-                optimizable_tensors[group["name"]] = group["params"][0]
-        return optimizable_tensors
-
-
-    def _prune_optimizer(self, mask):
-        optimizable_tensors = {}
-        for group in self.optimizer.param_groups:
-            stored_state = self.optimizer.state.get(group['params'][0], None)
-            if stored_state is not None:
-                stored_state["exp_avg"] = stored_state["exp_avg"][mask]
-                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
-
-                del self.optimizer.state[group['params'][0]]
-                group["params"][0] = nn.Parameter((group["params"][0][mask].requires_grad_(True)))
-                self.optimizer.state[group['params'][0]] = stored_state
-
-                optimizable_tensors[group["name"]] = group["params"][0]
-            else:
-                group["params"][0] = nn.Parameter(group["params"][0][mask].requires_grad_(True))
-                optimizable_tensors[group["name"]] = group["params"][0]
-        return optimizable_tensors
-
-
-    def prune_points(self, mask):
-        valid_points_mask = ~mask
-        optimizable_tensors = self._prune_optimizer(valid_points_mask)
-
-        self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"]
-        self._color = optimizable_tensors["color"]
-        self._resp = optimizable_tensors["resp"]
-
-        self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
-
-        self.denom = self.denom[valid_points_mask]
-        #self.max_radii2D = self.max_radii2D[valid_points_mask]
-
-
-    def cat_tensors_to_optimizer(self, tensors_dict):
-        optimizable_tensors = {}
-        for group in self.optimizer.param_groups:
-            assert len(group["params"]) == 1
-            extension_tensor = tensors_dict[group["name"]]
-            stored_state = self.optimizer.state.get(group['params'][0], None)
-            if stored_state is not None:
-
-                stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
-                stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)), dim=0)
-
-                del self.optimizer.state[group['params'][0]]
-                group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
-                self.optimizer.state[group['params'][0]] = stored_state
-
-                optimizable_tensors[group["name"]] = group["params"][0]
-            else:
-                group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
-                optimizable_tensors[group["name"]] = group["params"][0]
-
-        return optimizable_tensors 
-
-
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest,
-                               new_opacities, new_scaling, new_rotation, new_color, new_resp):
-        d = {"xyz": new_xyz,
-        "f_dc": new_features_dc,
-        "f_rest": new_features_rest,
-        "opacity": new_opacities,
-        "scaling" : new_scaling,
-        "rotation" : new_rotation,
-        "color":new_color,
-        "resp":new_resp}
-
-        optimizable_tensors = self.cat_tensors_to_optimizer(d)
-        self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"]
-        self._color = optimizable_tensors["color"]
-        self._resp = optimizable_tensors["resp"]
-
-        self.xyz_gradient_accum = torch.zeros(self.get_xyz.shape, device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        #self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-
-
-    def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
-        n_init_points = self.get_xyz.shape[0]
-        # Extract points that satisfy the gradient condition
-        padded_grad = torch.zeros((n_init_points), device="cuda")
-        padded_grad[:grads.shape[0]] = torch.norm(grads,dim=-1) #grads.squeeze()
-        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
-        print(f'{self.iteration} SPLIT {torch.sum(selected_pts_mask)} scene_extent={scene_extent} grad_threshold={grad_threshold} percent_dense={self.percent_dense}')
-        self.densif_stats["split"] += torch.sum(selected_pts_mask)
-        stds = self.get_scaling[selected_pts_mask].repeat(N,1)
-        means =torch.zeros((stds.size(0), 3),device="cuda")
-        samples = torch.normal(mean=means, std=stds)
-        rots = build_rotation(self.get_rotation[selected_pts_mask]).repeat(N,1,1)
-        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
-        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
-        new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
-        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
-        new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
-        new_color = self._color[selected_pts_mask].repeat(N,1)
-        new_resp = self._resp[selected_pts_mask].repeat(N,1)
-
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_color, new_resp)
-
-        prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
-        self.prune_points(prune_filter)
-
-
-    def densify_and_clone(self, grads, grad_threshold, scene_extent):
-        # Extract points that satisfy the gradient condition
-        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
-        print(f'{self.iteration} CLONE {torch.sum(selected_pts_mask)} scene_extent={scene_extent} grad_threshold={grad_threshold} percent_dense={self.percent_dense}') 
-        self.densif_stats["cloned"] += torch.sum(selected_pts_mask)
-        new_xyz = self._xyz[selected_pts_mask]
-        new_features_dc = self._features_dc[selected_pts_mask]
-        new_features_rest = self._features_rest[selected_pts_mask]
-        new_opacities = self._opacity[selected_pts_mask]
-        new_scaling = self._scaling[selected_pts_mask]
-        new_rotation = self._rotation[selected_pts_mask]
-        new_color = (torch.ones(new_xyz.shape[0],3)*torch.tensor([1.,0.,0.])).cuda() #self._color[selected_pts_mask]
-        new_resp = self._resp[selected_pts_mask]
-
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_color, new_resp) 
-
-
-    def densify_and_prune(self):
-        grads = self.xyz_gradient_accum / self.denom
-        grads[grads.isnan()] = 0.0
-
-        self.densify_and_clone(grads, self.densify_clone_grad_threshold, self.scene_extent)
-        self.densify_and_split(grads, self.densify_split_grad_threshold, self.scene_extent)
-
-        # prune_mask = (self.get_opacity < min_opacity).squeeze()
-        # n_pruned_by_opacity = torch.sum(prune_mask)
-        # if max_screen_size:
-        #     #big_points_vs = self.max_radii2D > max_screen_size
-        #     big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
-        #     prune_mask = torch.logical_or(prune_mask, big_points_ws)
-        # print(f'{self.iteration} PRUNE {torch.sum(prune_mask)} / {n_pruned_by_opacity} opac_min={torch.min(self.get_opacity)} scene_extent={extent} min_opacity={min_opacity}')
-        # self.densif_stats["pruned"] += torch.sum(prune_mask)
-        # self.prune_points(prune_mask)
-        
-
-        torch.cuda.empty_cache()
-
-
-    def prune_opacity(self):
-        prune_mask = (self.get_opacity < self.densify_min_opacity).squeeze()
-        n_pruned_by_opacity = torch.sum(prune_mask)
-        print(f'{self.iteration} PRUNE {torch.sum(prune_mask)} / {n_pruned_by_opacity}')
-        self.densif_stats["pruned"] += torch.sum(prune_mask)
-        self.prune_points(prune_mask)
-
-  
-    #def add_densification_stats(self, viewspace_point_tensor, update_filter):
-    #    self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
-    #    self.denom[update_filter] += 1 
-
-    def add_densification_stats(self, origin):
-        mask = (self._xyz.grad != 0).max(dim=1).values
-        dist = torch.norm(self._xyz[mask] - origin, dim=1, keepdim=True)
-        pos_grad_norm = torch.norm(self._xyz.grad[mask]*dist,dim=1,keepdim=True)/2
-        self.xyz_gradient_accum[mask] += pos_grad_norm
-        self.denom[mask] += 1
-
-    @staticmethod 
-    def build_scaling_rotation(s, r):
-            L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
-            R = build_rotation(r)
-            L[:, :, 0] = R[:, :, 0] * s[:,0:1]
-            L[:, :, 1] = R[:, :, 1] * s[:,1:2]
-            L[:, :, 2] = R[:, :, 2] * s[:,2:3]
-
-            # L[:,0,0] = s[:,0]
-            # L[:,1,1] = s[:,1]
-            # L[:,2,2] = s[:,2]
-
-            # L = R @ L
-            return L
 
     def train_iteration(self, step: int) -> Dict[str, float]:
 
         iteration = step
         self.iteration = iteration
-
-        self.update_learning_rate(iteration)
-
-        if iteration % 1000 == 0:
-            self.oneupSHdegree()
 
         # if not self._viewpoint_stack:
         #     loadCam.was_called = False  # type: ignore
@@ -752,167 +86,43 @@ class GSRTMethod(Method):
         camera_th = cameras_th.__getitem__(vp_id)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
 
-        check_grad = False
-        if check_grad:
-            ray_origins = self.ref_grads["ray_origins"].squeeze(0).cpu().reshape(640000,3)
-            ray_directions = self.ref_grads["ray_directions"].squeeze(0).cpu().reshape(640000,3)
-            ray_to_world = self.ref_grads["ray_to_world"].cpu().squeeze(0)
-            ray_origins = torch.hstack([ray_origins,torch.ones(640000,1)]) @ ray_to_world.T
-            ray_directions = torch.hstack([ray_directions,torch.zeros(640000,1)]) @ ray_to_world.T
-            ray_origins = ray_origins.cuda()
-            ray_directions = ray_directions.cuda()
-            res_x, res_y = 800,800 #camera_th.image_sizes
-        else:
-            ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
-            # ray_origins = torch.from_numpy(ray_origins).contiguous().cuda()
-            # ray_directions = torch.from_numpy(ray_directions).contiguous().cuda()
-            res_x, res_y = camera_th.image_sizes
-            ray_origins = ray_origins.float().squeeze()
-            ray_directions = ray_directions.float().squeeze()
-
-        use_batch = False
-        batch = torch.randint(0,ray_origins.shape[1],(2**16,),device="cuda")
-        batch_ray_origins = ray_origins[batch]
-        batch_ray_directions = ray_directions[batch]
-        batch_res_x = batch_res_y = 2**8
-        if use_batch:
-            setup = {
-                'tracer':self.tracer,
-                'ray_origins':batch_ray_origins.contiguous(),
-                'ray_directions':batch_ray_directions.contiguous(),
-                'width':batch_res_x,
-                'height':batch_res_y,
-                'sh_deg':self.active_sh_degree,
-                'white_background':self.white_background
-            }
-        else:
-            setup = {
-                'tracer':self.tracer,
-                'ray_origins':ray_origins.contiguous(),
-                'ray_directions':ray_directions.contiguous(),
-                'width':res_x,
-                'height':res_y,
-                'sh_deg':self.active_sh_degree,
-                'mesh_vrt':None,#self.ref_grads["mesh_vrt"],
-                'mesh_tri':None,#self.ref_grads["mesh_tri"],
-                'white_background':self.white_background
-            }
+        ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
+        # ray_origins = torch.from_numpy(ray_origins).contiguous().cuda()
+        # ray_directions = torch.from_numpy(ray_directions).contiguous().cuda()
+        res_x, res_y = camera_th.image_sizes
+        ray_origins = ray_origins.float().squeeze()
+        ray_directions = ray_directions.float().squeeze()
+    
         gt_image = torch.from_numpy(self.train_dataset['images'][vp_id])/255
-        bg = np.array([1, 1, 1]) if self.white_background else np.array([0, 0, 0])
+        bg = np.array([1, 1, 1]) if self.cfg.white_bg else np.array([0, 0, 0])
         if gt_image.shape[2] == 4: # has alpha
             gt_image_alpha = gt_image[:, :, 3:4]
             gt_image = gt_image[:, :, :3]*gt_image_alpha + (1 - gt_image_alpha)*bg
         gt_image = gt_image[:,:,:3]
-        if check_grad:
-            gt_image = self.ref_grads["ref_rgb"].squeeze(0)
         gt_image = gt_image.float().reshape(res_x*res_y,3).cuda()
-        batch_gt_image = gt_image[batch]
-        
-        retained_opacity = self.get_opacity
-        retained_scaling = self.get_scaling
-        retained_rotation = self.get_rotation
-        retained_features = self.get_features
 
-        inv_RS = self.build_scaling_rotation(1 / self.get_scaling, self._rotation).transpose(-1,-2).contiguous()
-        inv_RS.retain_grad()
-        image = trace_function(setup, retained_opacity, self._xyz, 
-                                   retained_scaling, retained_rotation,
-                                   retained_features,
-                                   self._color,self._resp,inv_RS)
-        # if (iteration-1) % 300 == 0:
-        #     with torch.no_grad():
-        #         setup = {
-        #             'tracer':self.tracer,
-        #             'ray_origins':ray_origins.contiguous(),
-        #             'ray_directions':ray_directions.contiguous(),
-        #             'width':res_x,
-        #             'height':res_y,
-        #             'sh_deg':self.active_sh_degree
-        #         }
-        #         out_image = trace_function(setup, retained_opacity, self._xyz, 
-        #                            retained_scaling, retained_rotation,
-        #                            retained_features,
-        #                            self._color,self._resp,inv_RS)
-        #         import matplotlib.pyplot as plt
-        #         plt.figure()
-        #         plt.imshow(out_image.detach().cpu().reshape(res_x,res_y,3).numpy())
-        #         plt.figure()
-        #         plt.imshow(gt_image.detach().cpu().reshape(res_x,res_y,3).numpy())
-        #         plt.show()
-        # if iteration > 500:
-        #     import matplotlib.pyplot as plt
-        #     plt.figure()
-        #     plt.imshow(image.detach().cpu().reshape(res_y,res_x,3).numpy())
-        #     plt.figure()
-        #     plt.imshow(gt_image.detach().cpu().reshape(res_y,res_x,3).numpy())
-        #     plt.show()
+        if self.cfg.use_batched_rays:
+            batch = torch.randint(0,ray_origins.shape[1],(2**16,),device="cuda")
+            batch_res = 2**8
+            rays = Rays(origins=ray_origins[batch].contiguous(), directions=ray_directions[batch].contiguous(),
+                         res_x=batch_res, res_y=batch_res)
+            gt_image=gt_image[batch]
+        else:  
+            rays = Rays(origins=ray_origins.contiguous(), directions=ray_directions.contiguous(),
+                         res_x=res_x, res_y=res_y)
 
-        # import matplotlib.pyplot as plt
-        # plt.figure()
-        # plt.imshow(self.ref_grads["pred_rgb"].detach().cpu().squeeze(0).numpy())
-        # plt.show()
+        out = self.training.step(tracer=self.tracer, t_step=step, rays=rays, gt_image=gt_image)
 
-        def get_loss(out, gt):
-            Ll1 = l1_loss(out, gt) 
-            ssim_value = ssim(out.reshape(1,res_y,res_x,3).permute(0,3,1,2), 
-                            gt.reshape(1,res_y,res_x,3).permute(0,3,1,2))
-            return (1.0 - self.lambda_dssim) * Ll1 + self.lambda_dssim * (1.0 - ssim_value)
-        loss = get_loss(image, batch_gt_image if use_batch else gt_image)
-
-        # print(torch.linalg.norm(image.detach()-self.ref_grads["pred_rgb"].squeeze(0).float().reshape(res_x*res_y,3)))
-        # print(torch.max(torch.abs((image.detach()-self.ref_grads["pred_rgb"].squeeze(0).float().reshape(res_x*res_y,3)))))
-        #loss = Ll1
-        loss.backward()
-
-        # print("resp_grad:",self._resp.grad.max().values)
-        # print("inv_RS grad:",None if inv_RS.grad is None else inv_RS.grad.max(dim=0).values)
-        # print("rotation grad:",None if self._rotation.grad is None else self._rotation.grad.max(dim=0).values)
-        # print("scaling grad:",None if self._scaling.grad is None else self._scaling.grad.max(dim=0).values)
-
-        with torch.no_grad():
-            
-            # Log
-            # if iteration % 10 == 0:
-            #     print(f'Iter {iteration}, viewpoint {vp_id}, loss {loss.detach().item()}')
-            # print(f"before densif {self._xyz.shape}")
-
-            # Densification
-            if iteration < self.densify_until_iter:
-
-                self.add_densification_stats(ray_origins[0])
-
-                if iteration > self.densify_from_iter and (iteration-self.densify_from_iter) % self.densification_interval == 0:
-                    size_threshold = 20 if iteration > self.opacity_reset_interval else None
-                    #size_threshold = 20 if step > 500 else None
-                    self.densify_and_prune()
-                
-                if iteration > self.densify_from_iter and (iteration-self.densify_from_iter) % self.prune_interval == 0:
-                    self.prune_opacity()
-
-                if iteration % self.opacity_reset_interval == 0: # or iteration == self.densify_from_iter: # white_background
-                    self.reset_opacity() 
-
-            # print(f"{iteration} after densif {self._xyz.shape}")
-            
-            pos_grad_norm = torch.norm(self._xyz.grad,dim=1) if self._xyz.grad is not None else torch.zeros(self._xyz.shape[0])
-            resp_grad = self._resp.grad.squeeze() if self._resp.grad is not None else torch.zeros(self._xyz.shape[0])
-            print(f"{iteration} N={self._xyz.shape[0]} L={loss.item()} opac=[{torch.min(self.get_opacity)} {torch.max(self.get_opacity)}] pos_grad_norm ={pos_grad_norm.max()}")
-
-        # Optimizer step
-        self.optimizer.step()
-        self.optimizer.zero_grad()
-
-        self.densif_stats["total"] = self._xyz.shape[0]
+        image = out["image"]
 
         psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
         
-        return {"loss":loss.detach().item(),"vp_id":vp_id,
+        return {"loss":out["loss"],"vp_id":vp_id,
                 "out_image": image.detach().cpu().reshape(res_y,res_x,3).numpy(),
-                "densif_stats":self.densif_stats,
-                "pos_grad_norm":pos_grad_norm.cpu().numpy(),
-                "resp_grad":resp_grad.squeeze().cpu().numpy(),
+                "densif_stats":self.training.densif_strategy.densif_stats,
                 "psnr":psnr}
     
+
     def test_iteration(self, step: int) -> Dict[str, float]:
         test_cameras = self.test_dataset['cameras']
         
@@ -926,12 +136,6 @@ class GSRTMethod(Method):
             gt_image = gt_image[:, :, :3]*gt_image_alpha + (1 - gt_image_alpha)*bg
         gt_image = gt_image[:,:,:3]
         gt_image = gt_image.float().reshape(res_x*res_y,3).cuda()
-        # import matplotlib.pyplot as plt
-        # plt.figure()
-        # plt.imshow(image.detach().cpu().reshape(res_y,res_x,3).numpy())
-        # plt.figure()
-        # plt.imshow(gt_image.detach().cpu().reshape(res_y,res_x,3).numpy())
-        # plt.show()
 
         image  = image.reshape(1,res_y,res_x,3).permute(0,3,1,2)
         gt_image = gt_image.reshape(1,res_y,res_x,3).permute(0,3,1,2)
@@ -941,16 +145,6 @@ class GSRTMethod(Method):
         lpips_value = lpips(image, gt_image)
         return ssim_value.item(), psnr_value.item(), lpips_value.item()
 
-    def test(self):
-        mean_ssim, mean_psnr, mean_lpips = 0,0,0
-        n = len(self.test_dataset['cameras'])
-        for i in range(n):
-            ssim_val,psnr_val,lpips_val = self.test_iteration(i)
-            print(f"SSIM: {ssim_val}, PSNR: {psnr_val}, LPIPS: {lpips_val}")
-            mean_ssim += ssim_val
-            mean_psnr += psnr_val  
-            mean_lpips += lpips_val
-        return mean_ssim/n, mean_psnr/n, mean_lpips/n
 
     @torch.no_grad()
     def render(self, camera : Cameras, *, options=None):
@@ -966,35 +160,25 @@ class GSRTMethod(Method):
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
         res_x, res_y = camera_th.image_sizes
 
-        setup = {
-            'tracer':self.tracer,
-            'ray_origins':ray_origins.contiguous(),
-            'ray_directions':ray_directions.contiguous(),
-            'width':res_x,
-            'height':res_y,
-            'sh_deg':self.active_sh_degree,
-            'white_background':self.white_background
-        }
         if not self.tracer.has_gaussians():
-            self.tracer.load_gaussians(self._xyz, self.get_rotation, self.get_scaling, self.get_opacity,
-                                    self.get_features, self.active_sh_degree, {"type":"optix"})
-        out = self.tracer.trace_fwd(setup['ray_origins'],setup['ray_directions'],
-                               setup['width'],setup['height'],
-                               setup['white_background'])
+            self.tracer.load_gaussians(self.model.xyz, self.model.rotation, self.model.scaling, self.model.opacity,
+                                    self.model.features, self.model.active_sh_degree, {"type":"optix"})
+        out = self.tracer.trace_fwd(ray_origins.contiguous(),ray_directions.contiguous(),
+                               res_x, res_y, self.cfg.white_bg)
         
         color = out["radiance"].detach().cpu().reshape(res_y,res_x,3).numpy()
         return {"color":color}
 
     
     def save(self, path, it):
-        torch.save({'xyz':self._xyz.detach(),
-                    'f_dc':self._features_dc.detach(),
-                    'f_rest':self._features_rest.detach(),
-                    'opacity':self._opacity.detach(),
-                    'scaling':self._scaling.detach(),
-                    'rotation':self._rotation.detach(),
-                    'color':self._color.detach(),
-                    'sh_deg':self.active_sh_degree
+        torch.save({'xyz':self.model.xyz.detach(),
+                    'f_dc':self.model.features_dc.detach(),
+                    'f_rest':self.model.features_rest.detach(),
+                    'opacity':self.model.opacity.detach(),
+                    'scaling':self.model.scaling.detach(),
+                    'rotation':self.model.rotation.detach(),
+                    'color':self.model.color.detach(),
+                    'sh_deg':self.model.active_sh_degree
                     },f'{path}/checkpoint_{it}.pt')
         
     def get_data(self):
@@ -1037,6 +221,5 @@ class GSRTMethod(Method):
 
     def get_info(self) -> ModelInfo:
         return {
-            **self.get_method_info(),
-            "loaded_checkpoint": self.checkpoint
+            **self.get_method_info()
         }

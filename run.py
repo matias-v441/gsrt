@@ -67,9 +67,6 @@ def main(cfg: DictConfig):
             tviewer.start()
         else:
             viewer.run()
-
-    if cfg.train:
-        model.training_setup()
         
     if cfg.use_wandb:
         wandb.init(
@@ -91,23 +88,22 @@ def main(cfg: DictConfig):
                             print(f'saving checkpoint_{step}')
                             model.save(cfg.results_dir,step)
             #pbar.set_postfix({"psnr": f"{metrics['psnr']:.2f}"})
-            vp_id = metrics['vp_id'] 
-            scales = model.get_scaling.detach().cpu().numpy()
-            opacities = model.get_opacity.detach().cpu().numpy()
-            wandb_log = {'loss:':metrics['loss'],
-                        'clone':metrics["densif_stats"]["cloned"],
-                        'prune':metrics["densif_stats"]["pruned"],
-                        'split':metrics["densif_stats"]["split"],
-                        'opacities': wandb.Histogram(opacities,num_bins=100),#np.histogram(opacities,1000)[0]),
-                        'scales_max': wandb.Histogram(scales.max(axis=-1),num_bins=100),#np.histogram(scales.max(axis=-1),500)[0]),
-                        'pos_grad_norm': wandb.Histogram(metrics["pos_grad_norm"],num_bins=100),
-                        #'resp_grad': wandb.Histogram(metrics["resp_grad"],num_bins=100),
-                        'N':metrics["densif_stats"]["total"]
-                        }
-            if (step >= 0 and step%300==0) and metrics["out_image"] is not None:# or step < 10:
-                wandb_log['image'] = wandb.Image(metrics['out_image']/np.max(metrics['out_image']))
-            if cfg.use_wandb:
-                wandb.log(wandb_log)
+            # scales = model.get_scaling.detach().cpu().numpy()
+            # opacities = model.get_opacity.detach().cpu().numpy()
+            # wandb_log = {'loss:':metrics['loss'],
+            #             'clone':metrics["densif_stats"]["cloned"],
+            #             'prune':metrics["densif_stats"]["pruned"],
+            #             'split':metrics["densif_stats"]["split"],
+            #             'opacities': wandb.Histogram(opacities,num_bins=100),#np.histogram(opacities,1000)[0]),
+            #             'scales_max': wandb.Histogram(scales.max(axis=-1),num_bins=100),#np.histogram(scales.max(axis=-1),500)[0]),
+            #             'pos_grad_norm': wandb.Histogram(metrics["pos_grad_norm"],num_bins=100),
+            #             #'resp_grad': wandb.Histogram(metrics["resp_grad"],num_bins=100),
+            #             'N':metrics["densif_stats"]["total"]
+            #             }
+            # if (step >= 0 and step%300==0) and metrics["out_image"] is not None:# or step < 10:
+            #     wandb_log['image'] = wandb.Image(metrics['out_image']/np.max(metrics['out_image']))
+            # if cfg.use_wandb:
+            #     wandb.log(wandb_log)
             pbar.update()
 
     end_time = time.time()

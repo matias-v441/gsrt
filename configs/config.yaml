@@ -9,6 +9,8 @@ evaluate: false
 train: false
 view: true
 white_bg: false
+use_batched_rays: false
+batch_size: 4096
 
 results_dir: chpt
 checkpoint: null
@@ -16,6 +18,7 @@ start_iter: 1
 save_results: false
 save_interval: 100
 save_start_iter: 1000
+checkpoint_type: gsrt
 
 datasets:
   blender: external://blender 

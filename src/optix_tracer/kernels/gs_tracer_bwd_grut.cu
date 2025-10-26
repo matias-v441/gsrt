@@ -101,9 +101,9 @@ __device__ __forceinline__ void atomicAdd_float3(float3 &acc, const float3 &val)
 __device__ void compute_radiance_bwd(int gs_id, const float3& ray_origin, const float3& ray_direction,
     const float3& dL_dcolor, float3& grad_xyz, const bool* clamped)
 {
-    atomicAdd_float3(params.grad_color[gs_id], dL_dcolor);
-    grad_xyz = make_float3(0.f);
-    if(params.sh_deg == -1) return;
+    // atomicAdd_float3(params.grad_color[gs_id], dL_dcolor);
+    // grad_xyz = make_float3(0.f);
+    // if(params.sh_deg == -1) return;
 
 	// same as forward -----
 
@@ -630,7 +630,7 @@ __device__ __forceinline__ void add_grad(const Acc& acc, const float3& rad, cons
     const float3 dL_dC = params.dL_dC[launch_id];
 
     const float dL_dresp = dot(dL_dC,dC_dresp);
-    atomicAdd(&params.grad_resp[chit_id],dL_dresp);
+    //atomicAdd(&params.grad_resp[chit_id],dL_dresp);
 
     const float dL_dopac = dL_dresp*G;
     atomicAdd(&params.grad_opacity[chit_id],dL_dopac);

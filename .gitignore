@@ -148,9 +148,12 @@ data/
 wandb/
 run_log*
 *.zip
-*checkpoint*
+*checkpoint*/
+*.pth
+*.pt
 nb-info.json
 lego_3dgrt/
 *.jpg
 _*
+!__init__.py
 *.sh
