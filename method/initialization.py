@@ -206,7 +206,8 @@ def initialize(cfg, dataset):
     features[:, 3:, 1:] = 0.0
     from .model import GaussianModel, Activations
     act = Activations(cfg)
-    return GaussianModel(activations=act,
+    return GaussianModel(cfg,
+            activations=act,
             xyz = torch.from_numpy(xyz).float().cuda(),
             scaling = scales,
             rotation = torch.hstack([torch.ones(n,1),torch.zeros(n,3)]).cuda(),

@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - _self_
+
+dataset: mipnerf
+scene: bonsai
+save_results: true
+results_dir: results/mipnerf_bonsai_gsrt

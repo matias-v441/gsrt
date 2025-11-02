@@ -16,6 +16,8 @@ loss:
 
 optimizer:
   type: adam
+  lr: 0.01
+  eps: 1e-15
   position_lr_init: 0.00016
   position_lr_final: 0.0000016
   position_lr_delay_mult: 0.01

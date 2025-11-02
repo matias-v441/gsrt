@@ -64,16 +64,13 @@ class GSRTMethod(Method):
 
     def train_iteration(self, step: int) -> Dict[str, float]:
 
-        iteration = step
-        self.iteration = iteration
-
         # if not self._viewpoint_stack:
         #     loadCam.was_called = False  # type: ignore
         #     self._viewpoint_stack = self.scene.getTrainCameras().copy()
         #     if any(not getattr(cam, "_patched", False) for cam in self._viewpoint_stack):
         #         raise RuntimeError("could not patch loadCam!")
         # viewpoint_cam = self._viewpoint_stack.pop(randint(0, len(self._viewpoint_stack) - 1))
-        random.seed(iteration)
+        random.seed(step)
         vp_id = self.viewpoint_ids[randint(0, self.viewpoint_ids.shape[0] - 1)] 
         train_cameras = self.train_dataset['cameras']
         #cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
@@ -169,38 +166,8 @@ class GSRTMethod(Method):
         color = out["radiance"].detach().cpu().reshape(res_y,res_x,3).numpy()
         return {"color":color}
 
-    
-    def save(self, path, it):
-        torch.save({'xyz':self.model.xyz.detach(),
-                    'f_dc':self.model.features_dc.detach(),
-                    'f_rest':self.model.features_rest.detach(),
-                    'opacity':self.model.opacity.detach(),
-                    'scaling':self.model.scaling.detach(),
-                    'rotation':self.model.rotation.detach(),
-                    'color':self.model.color.detach(),
-                    'sh_deg':self.model.active_sh_degree
-                    },f'{path}/checkpoint_{it}.pt')
-        
-    def get_data(self):
-        return (self._xyz.detach(),
-                self._features_dc.detach(),
-                self._features_rest.detach(),
-                self._opacity.detach(),
-                self._scaling.detach(),
-                self._rotation.detach(),
-                self._color.detach(),
-                self.active_sh_degree)
-
-    def set_data(self,data):
-            (self._xyz,
-            self._features_dc,
-            self._features_rest,
-            self._opacity,
-            self._scaling,
-            self._rotation,
-            self._color,
-            self.active_sh_degree) = data
-
+    def save(self, path):
+        self.model.save(path)
 
     @classmethod
     def get_method_info(cls):

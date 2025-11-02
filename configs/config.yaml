@@ -2,21 +2,24 @@ defaults:
   - parameters: 3dgrt
   - _self_
   - mode: view
+  - experiment: lego
 
 method_name: gsrt
 use_wandb: false
 evaluate: false
 train: false
 view: true
+
 white_bg: false
 use_batched_rays: false
 batch_size: 4096
 
 results_dir: chpt
 checkpoint: null
+resume_training: true
 start_iter: 1
 save_results: false
-save_interval: 100
+save_interval: 1000
 save_start_iter: 1000
 checkpoint_type: gsrt
 
@@ -26,6 +29,5 @@ datasets:
   zipnerf: /home/matbi/proj/Fisheye-GS/data/zipnerf-undistorted
   zipnerf_fisheye: /home/matbi/proj/Fisheye-GS/data/zipnerf-fisheye
 
-dataset: blender
-scene: lego
 data_path: ${datasets[${dataset}]}/${scene}
+

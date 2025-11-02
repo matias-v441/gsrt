@@ -30,7 +30,11 @@ def main(cfg: DictConfig):
     method_spec = get_method_spec(cfg.method_name)
     method_info = method_cls.get_method_info()
     train_dataset,test_dataset = None,None
-    if not cfg.train and (cfg.checkpoint is None or not os.path.exists(cfg.checkpoint)):
+    # load final checkpoint from previous run if exists
+    if cfg.resume_training and cfg.results_dir is not None and os.path.exists(cfg.results_dir):
+        cfg.checkpoint = os.path.join(cfg.results_dir, "checkpoint_final.pt")
+    # require checkpoint if not training
+    if not cfg.train and (cfg.checkpoint is None or not os.path.exists(cfg.checkpoint)): 
         raise ValueError("You must provide a valid checkpoint unless you are training.")
     if cfg.train:
         train_dataset = load_dataset(cfg.data_path, 
@@ -67,49 +71,16 @@ def main(cfg: DictConfig):
             tviewer.start()
         else:
             viewer.run()
-        
-    if cfg.use_wandb:
-        wandb.init(
-            project="gsrt",
-            config={
-            "learning_rate": .001,
-            "architecture": "GSRT",
-            "dataset": "blender/lego",
-            "epochs": 1,
-            }
-        )
 
     import time
     start_time = time.time()
     with tqdm(total=model_info["num_iterations"]) as pbar:
-        for step in range(cfg.start_iter,model_info["num_iterations"]+1):
-            metrics = model.train_iteration(step)
-            if cfg.save_results and (step >= cfg.save_start_iter and step%cfg.save_interval==0):
-                            print(f'saving checkpoint_{step}')
-                            model.save(cfg.results_dir,step)
-            #pbar.set_postfix({"psnr": f"{metrics['psnr']:.2f}"})
-            # scales = model.get_scaling.detach().cpu().numpy()
-            # opacities = model.get_opacity.detach().cpu().numpy()
-            # wandb_log = {'loss:':metrics['loss'],
-            #             'clone':metrics["densif_stats"]["cloned"],
-            #             'prune':metrics["densif_stats"]["pruned"],
-            #             'split':metrics["densif_stats"]["split"],
-            #             'opacities': wandb.Histogram(opacities,num_bins=100),#np.histogram(opacities,1000)[0]),
-            #             'scales_max': wandb.Histogram(scales.max(axis=-1),num_bins=100),#np.histogram(scales.max(axis=-1),500)[0]),
-            #             'pos_grad_norm': wandb.Histogram(metrics["pos_grad_norm"],num_bins=100),
-            #             #'resp_grad': wandb.Histogram(metrics["resp_grad"],num_bins=100),
-            #             'N':metrics["densif_stats"]["total"]
-            #             }
-            # if (step >= 0 and step%300==0) and metrics["out_image"] is not None:# or step < 10:
-            #     wandb_log['image'] = wandb.Image(metrics['out_image']/np.max(metrics['out_image']))
-            # if cfg.use_wandb:
-            #     wandb.log(wandb_log)
+        for step in range(model_info["num_iterations"]+1):
+            model.train_iteration(step)
             pbar.update()
 
     end_time = time.time()
     print(f"Training time: {(end_time - start_time)/60:.2f} minutes") # 185.36 min for 30K lego, 158.74 min for 30K drums
-    # Save the model
-    model.save(cfg.results_dir,model_info["num_iterations"])
     # Create a minimal nb-info.json file such that the model can be loaded
     with open("nb-info.json", "w") as f:
         f.write(f'{{"method": "{cfg.method_name}"}}')
