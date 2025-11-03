@@ -68,7 +68,7 @@ class Optimizer:
                 "name": "rotation"
             }
         ]
-        self.opt = torch.optim.AdamW(self._param_groups, lr=self.lr, eps=self.eps)
+        self.opt = torch.optim.Adam(self._param_groups, lr=self.lr, eps=self.eps)
         if self._state_dict is not None:
             self.opt.load_state_dict(self._state_dict)
         self.step = self.opt.step

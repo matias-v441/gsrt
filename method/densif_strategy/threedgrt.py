@@ -2,6 +2,7 @@ from .base import BaseDensifStrategy
 import torch
 import torch.nn as nn
 from typing import Callable
+import gc
 
 from utils.general_utils import safe_state, build_rotation, get_expon_lr_func, inverse_sigmoid  # type: ignore
 
@@ -133,6 +134,10 @@ class Densif3DGRT(BaseDensifStrategy):
             # L = R @ L
             return L
 
+    def _cleanup_memory(self):
+        torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.empty_cache()
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.model.num_gaussians
@@ -160,6 +165,8 @@ class Densif3DGRT(BaseDensifStrategy):
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
+        self._cleanup_memory()
+
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
@@ -176,6 +183,8 @@ class Densif3DGRT(BaseDensifStrategy):
         new_rotation = self.model._rotation[selected_pts_mask]
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation) 
+
+        self._cleanup_memory()
 
 
     def densify_and_prune(self):
@@ -196,7 +205,8 @@ class Densif3DGRT(BaseDensifStrategy):
         # self.prune_points(prune_mask)
         
 
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
+        self._cleanup_memory()
 
 
     def prune_opacity(self):
