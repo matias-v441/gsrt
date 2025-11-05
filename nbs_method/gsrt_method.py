@@ -4,19 +4,12 @@ import torch
 from torch import nn
 import numpy as np
 
-import dataclasses
 import random
-import itertools
-import shlex
-import copy
-import os
-import tempfile
-import numpy as np
+import warnings
 
 from nerfbaselines import (
     cameras,Method, MethodInfo, ModelInfo, RenderOutput, Cameras, camera_model_to_int, Dataset
 )
-import shlex
 
 from argparse import ArgumentParser
 
@@ -56,11 +49,20 @@ class GSRTMethod(Method):
             self.model = load_checkpoint(self.cfg)
         else:
             self.model = initialize(self.cfg, self.train_dataset)
+        self.model.tracer = GaussiansTracer()
         if train_dataset is not None:
-            self.training = Training(self.cfg, self.model, train_dataset)
+            self.training = Training(self.cfg, self.model)
             self.viewpoint_ids = torch.arange(len(self.train_dataset['cameras']))
-        self.tracer = GaussiansTracer()
 
+    def transform_gt_image(self, gt_image: torch.Tensor) -> torch.Tensor:
+        gt_image = gt_image.float() / 255
+        bg = np.array([1, 1, 1]) if self.model.white_background else np.array([0, 0, 0])
+        if gt_image.shape[2] == 4:
+            #warnings.warn("Alpha channel found in ground truth image, applying alpha compositing with background color.") 
+            gt_image_alpha = gt_image[:, :, 3:4]
+            gt_image = gt_image[:, :, :3] * gt_image_alpha + (1 - gt_image_alpha) * bg
+        gt_image = gt_image[:, :, :3]
+        return gt_image.float().reshape(-1, 3).cuda()
 
     def train_iteration(self, step: int) -> Dict[str, float]:
 
@@ -89,14 +91,8 @@ class GSRTMethod(Method):
         res_x, res_y = camera_th.image_sizes
         ray_origins = ray_origins.float().squeeze()
         ray_directions = ray_directions.float().squeeze()
-    
-        gt_image = torch.from_numpy(self.train_dataset['images'][vp_id])/255
-        bg = np.array([1, 1, 1]) if self.cfg.white_bg else np.array([0, 0, 0])
-        if gt_image.shape[2] == 4: # has alpha
-            gt_image_alpha = gt_image[:, :, 3:4]
-            gt_image = gt_image[:, :, :3]*gt_image_alpha + (1 - gt_image_alpha)*bg
-        gt_image = gt_image[:,:,:3]
-        gt_image = gt_image.float().reshape(res_x*res_y,3).cuda()
+
+        gt_image = self.transform_gt_image(torch.from_numpy(self.train_dataset['images'][vp_id]))
 
         if self.cfg.use_batched_rays:
             batch = torch.randint(0,ray_origins.shape[1],(2**16,),device="cuda")
@@ -108,7 +104,7 @@ class GSRTMethod(Method):
             rays = Rays(origins=ray_origins.contiguous(), directions=ray_directions.contiguous(),
                          res_x=res_x, res_y=res_y)
 
-        out = self.training.step(tracer=self.tracer, t_step=step, rays=rays, gt_image=gt_image)
+        out = self.training.step(t_step=step, rays=rays, gt_image=gt_image)
 
         image = out["image"]
 
@@ -126,20 +122,14 @@ class GSRTMethod(Method):
         image = torch.from_numpy(self.render(test_cameras, options={"vp_id":step})["color"]).cuda()
         res_y, res_x = image.shape[:2]
         
-        gt_image = torch.from_numpy(self.test_dataset['images'][step])/255
-        bg = np.array([1, 1, 1]) if self.white_background else np.array([0, 0, 0])
-        if gt_image.shape[2] == 4: # has alpha
-            gt_image_alpha = gt_image[:, :, 3:4]
-            gt_image = gt_image[:, :, :3]*gt_image_alpha + (1 - gt_image_alpha)*bg
-        gt_image = gt_image[:,:,:3]
-        gt_image = gt_image.float().reshape(res_x*res_y,3).cuda()
+        gt_image = self.transform_gt_image(torch.from_numpy(self.test_dataset['images'][step]))
 
         image  = image.reshape(1,res_y,res_x,3).permute(0,3,1,2)
         gt_image = gt_image.reshape(1,res_y,res_x,3).permute(0,3,1,2)
 
         ssim_value = ssim(image, gt_image)
         psnr_value = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
-        lpips_value = lpips(image, gt_image)
+        lpips_value = lpips(image, gt_image, net_type='vgg')
         return ssim_value.item(), psnr_value.item(), lpips_value.item()
 
 
@@ -156,15 +146,11 @@ class GSRTMethod(Method):
         xy = cameras.get_image_pixels(camera_th.image_sizes)
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
         res_x, res_y = camera_th.image_sizes
+        rays = Rays(origins=ray_origins.contiguous(), directions=ray_directions.contiguous(),
+                         res_x=res_x, res_y=res_y)
+        img = self.model.forward(rays)
 
-        if not self.tracer.has_gaussians():
-            self.tracer.load_gaussians(self.model.xyz, self.model.rotation, self.model.scaling, self.model.opacity,
-                                    self.model.features, self.model.active_sh_degree, {"type":"optix"})
-        out = self.tracer.trace_fwd(ray_origins.contiguous(),ray_directions.contiguous(),
-                               res_x, res_y, self.cfg.white_bg)
-        
-        color = out["radiance"].detach().cpu().reshape(res_y,res_x,3).numpy()
-        return {"color":color}
+        return {"color":img.detach().cpu().reshape(res_y,res_x,3).numpy()}
 
     def save(self, path):
         self.model.save(path)

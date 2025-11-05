@@ -5,6 +5,7 @@ def load_checkpoint(cfg):
     from .model import GaussianModel, Activations, Optimizer
     ch = torch.load(cfg["checkpoint"])
     if cfg["checkpoint_type"] == 'gsrt':
+        print("Scene extent:", ch['scene_extent'])
         return GaussianModel(cfg,
                 xyz=ch['xyz'],
                 scaling=ch['scaling'],
@@ -16,7 +17,24 @@ def load_checkpoint(cfg):
                 max_sh_degree=ch['max_sh_deg'],
                 scene_extent=ch['scene_extent'],
                 iteration=ch.get('iteration',0),
-                optimizer=Optimizer(cfg, state_dict=ch.get('optimizer', None)))
+                optimizer=Optimizer(cfg, state_dict=ch.get('optimizer', None)),
+                white_bg=ch.get("white_bg", False))
+
+    if cfg["checkpoint_type"] == 'gsrt_old':
+        ch = torch.load(cfg.checkpoint)
+        return GaussianModel(cfg,
+                xyz = ch['xyz'],
+                scaling = ch['scaling'],
+                rotation = ch['rotation'],
+                opacity = ch['opacity'],
+                features_dc = ch['f_dc'],
+                features_rest = ch['f_rest'],
+                active_sh_degree = ch['sh_deg'],
+                max_sh_degree = 3,
+                scene_extent = 5.2,
+                white_bg = False,
+                iteration = 30000
+                )
 
     if cfg["checkpoint_type"] == '3dgs':
         act = Activations(cfg)
@@ -30,7 +48,8 @@ def load_checkpoint(cfg):
                 features_rest=ch['f_rest'].detach().cuda(),
                 active_sh_degree=ch['sh_deg'],
                 scene_extent=5.2,
-                max_sh_degree=3)
+                max_sh_degree=3,
+                white_bg=cfg.get("white_bg", False))
 
     if cfg["checkpoint_type"] == '3dgrt':
         N = ch['positions'].shape[0]
@@ -41,7 +60,8 @@ def load_checkpoint(cfg):
                 opacity_pre_act=ch['density'].detach(),
                 features_dc=ch['features_albedo'].detach().reshape(N,1,3),
                 features_rest=ch['features_specular'].detach().reshape(N,15,3),
-                max_sh_degree=ch['max_n_features'])
+                max_sh_degree=ch['max_n_features'],
+                white_bg=cfg.get("white_bg", False))
 
     raise ValueError(f"Unknown checkpoint type: {cfg.checkpoint_type}")
 

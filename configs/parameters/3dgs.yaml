@@ -12,7 +12,12 @@ densification:
   percent_dense: 0.01 
 
 loss:
-  lambda_dssim: 0.2
+  use_l1: true
+  lambda_l1: 0.8
+  use_l2: false
+  lambda_l2: 1.0
+  use_ssim: true
+  lambda_ssim: 0.2
 
 optimizer:
   type: adam

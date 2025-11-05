@@ -189,8 +189,11 @@ def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: 
 
 
 def initialize(cfg, dataset):
-
-    scene_info = _convert_dataset_to_gaussian_splatting(dataset, "", True)
+    white_bg = dataset["metadata"].get("white_background", False)
+    if cfg.get("white_bg", False):
+        warnings.warn("Overriding dataset white_background to True as per cfg")
+        white_bg = True
+    scene_info = _convert_dataset_to_gaussian_splatting(dataset, "", white_background=white_bg, scale_coords=cfg.parameters.get("scale_coords", None))
 
     torch.manual_seed(0)
     #self._xyz = (torch.rand(n,3)*self.scene_extent*.5-self.scene_extent*.25).cuda()
@@ -207,6 +210,7 @@ def initialize(cfg, dataset):
     from .model import GaussianModel, Activations
     act = Activations(cfg)
     return GaussianModel(cfg,
+            white_bg=white_bg,
             activations=act,
             xyz = torch.from_numpy(xyz).float().cuda(),
             scaling = scales,

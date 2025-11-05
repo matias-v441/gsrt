@@ -12,15 +12,9 @@ from .densif_strategy import Densif3DGRT
 
 class Training:
 
-    def __init__(self, cfg, model, dataset):
+    def __init__(self, cfg, model):
         self.model = model
-        self.dataset = dataset
-        self.cfg = cfg
-        
-        if cfg["white_bg"]:
-            self.white_background = True
-        else:
-            self.white_background = dataset["metadata"].get("white_background", False) 
+        self.cfg = cfg 
 
         self.densif_strategy = Densif3DGRT(cfg, self.model)
 
@@ -62,7 +56,7 @@ class Training:
         self.finalize()
 
 
-    def step(self, *, tracer, t_step, rays, gt_image) -> float:
+    def step(self, *, t_step, rays, gt_image) -> float:
 
         self.model.iteration = self.start_iter + t_step
 
@@ -71,23 +65,20 @@ class Training:
         if self.model.iteration % 1000 == 0:
             self.model.oneupSHdegree()
 
-        image = self.model.forward(tracer, rays, self.white_background)
+        image = self.model.forward(rays)
 
-        Ll1 = l1_loss(image, gt_image) 
+        loss_cfg = self.cfg.parameters.loss
+
+        l1 = l1_loss(image, gt_image)
         ssim_value = ssim(image.reshape(1,rays.res_y,rays.res_x,3).permute(0,3,1,2), 
                         gt_image.reshape(1,rays.res_y,rays.res_x,3).permute(0,3,1,2))
-        loss = Ll1 # (1.0 - self.lambda_dssim) * Ll1 + self.lambda_dssim * (1.0 - ssim_value)
+        Ll1 = l1 if loss_cfg.use_l1 else 0
+        Lssim = (1.0 - ssim_value) if loss_cfg.use_ssim else 0
+        loss = loss_cfg.lambda_l1*Ll1 + loss_cfg.lambda_ssim*Lssim
 
         loss.backward()
 
-        with torch.no_grad():
-
-            # Densification stats
-            self.densif_strategy.densify(self.model.iteration, ray_origins=rays.origins)
-            # print(f"{t_step} after densif {self._xyz.shape}")
-
-            pos_grad_norm = torch.norm(self.model._xyz.grad,dim=1) if self.model._xyz.grad is not None else torch.zeros(self.model._xyz.shape[0])
-            #print(f"{t_step} N={self.model.num_gaussians} L={loss.item()} opac=[{torch.min(self.model.opacity)} {torch.max(self.model.opacity)}] pos_grad_norm ={pos_grad_norm.max()}")
+        self.densif_strategy.densify(self.model.iteration, ray_origins=rays.origins)
 
         # Optimizer step
         self.model.optimizer.step()
@@ -106,7 +97,7 @@ class Training:
                 "loss": loss.item(),
                 "psnr": psnr.item(),
                 "ssim": ssim_value.item(),
-                "l1_loss": Ll1.item(),
+                "l1_loss": l1.item(),
                 "num_gaussians": self.model.num_gaussians,
                 "learning_rate": self.model.optimizer.param_groups[0]['lr'],
                 "iteration": self.model.iteration

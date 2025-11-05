@@ -8,7 +8,7 @@ method_name: gsrt
 use_wandb: false
 evaluate: false
 train: false
-view: true
+use_viewer: true
 
 white_bg: false
 use_batched_rays: false

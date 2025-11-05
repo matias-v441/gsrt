@@ -59,35 +59,50 @@ def main(cfg: DictConfig):
     model_info = model.get_info()
     model_info["num_iterations"] = cfg.parameters.n_iterations
 
-    if cfg.view:
+    if cfg.use_viewer:
         stack = ExitStack()
         viewer = stack.enter_context(Viewer(
-                        #train_dataset=train_dataset, 
-                        #test_dataset=test_dataset, 
+                        train_dataset=train_dataset, 
+                        test_dataset=test_dataset, 
                         model=model))
-        if cfg.train:
+        tviewer = None
+        if cfg.train or cfg.evaluate:
             import threading
             tviewer = threading.Thread(target=viewer.run)
             tviewer.start()
         else:
             viewer.run()
 
-    import time
-    start_time = time.time()
-    with tqdm(total=model_info["num_iterations"]) as pbar:
-        for step in range(model_info["num_iterations"]+1):
-            model.train_iteration(step)
-            pbar.update()
+    if cfg.train:
+        import time
+        start_time = time.time()
+        with tqdm(total=model_info["num_iterations"]) as pbar:
+            for step in range(model_info["num_iterations"]+1):
+                model.train_iteration(step)
+                pbar.update()
 
-    end_time = time.time()
-    print(f"Training time: {(end_time - start_time)/60:.2f} minutes") # 185.36 min for 30K lego, 158.74 min for 30K drums
-    # Create a minimal nb-info.json file such that the model can be loaded
-    with open("nb-info.json", "w") as f:
-        f.write(f'{{"method": "{cfg.method_name}"}}')
+        end_time = time.time()
+        print(f"Training time: {(end_time - start_time)/60:.2f} minutes") 
 
-    # Close the stack. In real code, you should use the context manager
-    stack.close()
-    tviewer.join()
+    if cfg.evaluate:
+        num_steps = len(test_dataset["cameras"])
+        with tqdm(total=num_steps) as pbar:
+            tot_ssim, tot_psnr, tot_lpips = 0.0, 0.0, 0.0
+            for step in range(num_steps):
+                ssim, psnr, lpips = model.test_iteration(step)
+                tot_ssim += ssim
+                tot_psnr += psnr
+                tot_lpips += lpips
+                pbar.update()
+            print(f"Average SSIM: {tot_ssim/num_steps:.4f}, PSNR: {tot_psnr/num_steps:.4f}, LPIPS: {tot_lpips/num_steps:.4f}")
+            with open(os.path.join(cfg.results_dir, "eval.json"), "wb") as f:
+                f.write(str.encode(
+                    f'{{"ssim": {tot_ssim/num_steps:.4f}, "psnr": {tot_psnr/num_steps:.4f}, "lpips": {tot_lpips/num_steps:.4f}}}'
+                ))
+
+    if cfg.use_viewer:
+        stack.close()
+        if tviewer: tviewer.join()
 
 
 if __name__ == "__main__":

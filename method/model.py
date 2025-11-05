@@ -101,7 +101,8 @@ class GaussianModel(nn.Module):
                 features_rest: torch.Tensor,
                 active_sh_degree: int = 0,
                 max_sh_degree: int,
-                scene_extent: float):
+                scene_extent: float,
+                white_bg: bool):
         super().__init__()
 
         if not activations:
@@ -123,7 +124,9 @@ class GaussianModel(nn.Module):
         self._features_dc = nn.Parameter(features_dc.cuda())
         self._features_rest = nn.Parameter(features_rest.cuda())
 
-        self._optimizer = optimizer
+        self._white_background = white_bg
+        self.tracer = None
+        self._optimizer = optimizer 
 
 
     @staticmethod
@@ -148,7 +151,8 @@ class GaussianModel(nn.Module):
                     'scene_extent':self._scene_extent,
                     'iteration':self.iteration,
                     'optimizer': self.optimizer.state_dict()\
-                          if self.optimizer is not None else None
+                          if self.optimizer is not None else None,
+                    'white_bg': self._white_background
                     }, path)  
 
     def oneupSHdegree(self):
@@ -170,6 +174,10 @@ class GaussianModel(nn.Module):
             "features_dc": self._features_dc,
             "features_rest": self._features_rest
         }
+
+    @property
+    def white_background(self):
+        return self._white_background
 
     @property
     def num_gaussians(self):
@@ -210,9 +218,9 @@ class GaussianModel(nn.Module):
         features_rest = self._features_rest
         return torch.cat((features_dc, features_rest), dim=1) 
 
-    def forward(self, tracer, rays: Rays, white_background=False):
+    def forward(self, rays: Rays):
         return TraceFunction.apply(self.opacity, self.xyz, self.scaling, self.rotation, self.features,
-                tracer, self.active_sh_degree, rays, white_background)
+                self.tracer, self.active_sh_degree, rays, self._white_background)
 
 GaussianModel.from_dataset = staticmethod(initialize)
 GaussianModel.from_checkpoint = staticmethod(load_checkpoint)

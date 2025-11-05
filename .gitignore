@@ -157,3 +157,4 @@ lego_3dgrt/
 _*
 !__init__.py
 *.sh
+*.json

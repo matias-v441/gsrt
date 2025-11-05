@@ -228,7 +228,7 @@ class Densif3DGRT(BaseDensifStrategy):
         self.xyz_gradient_accum[mask] += pos_grad_norm
         self.denom[mask] += 1
 
-
+    @torch.no_grad()
     def densify(self, t_step:int, *, ray_origins: torch.Tensor):
         # Implement the 3D-GRT densification strategy here
         self.densif_stats["total"] = self.model.num_gaussians
