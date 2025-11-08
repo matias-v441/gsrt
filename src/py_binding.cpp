@@ -49,28 +49,32 @@ struct PyTracer {
         CHECK_INPUT(device,sh,3);
 
         gsrt::ASParams params;
-        if(!tracer){
-            assert(as_params.contains("type"));
-            const std::string type = as_params["type"].cast<std::string>();
-            if(type == "optix"){
-                params = gsrt::OptixASParams{};
-                tracer = std::make_unique<optix::OptixTracer>(device.index());
-            }else if(type == "kd"){
-                gsrt::KdParams kd_params;
-                if(as_params.contains("no_rebuild"))
-                    kd_params.no_rebuild = as_params["no_rebuild"].cast<bool>();
-                if(as_params.contains("max_leaf_size"))
-                    kd_params.max_leaf_size = as_params["max_leaf_size"].cast<size_t>();
-                kd_params.device = device.is_cpu() ? -1 : device.index();
-                if(device.is_cpu()){
-                    std::cout << "KdTracer: tracing on CPU" << std::endl;
-                }else{
-                    std::cout << "KdTracer: tracing on GPU " << kd_params.device << std::endl;
-                }
-                params = kd_params;
-                tracer = std::make_unique<kd::KdTracer>();
+        assert(as_params.contains("type"));
+        const std::string type = as_params["type"].cast<std::string>();
+        if(type == "optix"){
+            params = gsrt::OptixASParams{};
+        }else if(type == "kd"){
+            gsrt::KdParams kd_params;
+            if(as_params.contains("no_rebuild"))
+                kd_params.no_rebuild = as_params["no_rebuild"].cast<bool>();
+            if(as_params.contains("max_leaf_size"))
+                kd_params.max_leaf_size = as_params["max_leaf_size"].cast<size_t>();
+            kd_params.device = device.is_cpu() ? -1 : device.index();
+            if(device.is_cpu()){
+                std::cout << "KdTracer: tracing on CPU" << std::endl;
             }else{
-                throw std::runtime_error("Unknown ASParams type: " + type);
+                std::cout << "KdTracer: tracing on GPU " << kd_params.device << std::endl;
+            }
+            params = kd_params;
+        }else{
+            throw std::runtime_error("Unknown tracer type: " + type);
+        }
+
+        if(!tracer){
+            if(std::holds_alternative<gsrt::OptixASParams>(params)){
+                tracer = std::make_unique<optix::OptixTracer>(device.index());
+            }else if(std::holds_alternative<gsrt::KdParams>(params)){
+                tracer = std::make_unique<kd::KdTracer>();
             }
         }
 
@@ -117,12 +121,12 @@ struct PyTracer {
         torch::Tensor radiance = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor transmittance = torch::zeros({(long)num_rays, 1}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor distance = torch::zeros({(long)num_rays, 1}, torch::device(device).dtype(torch::kFloat32));
-        torch::Tensor debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
+        //torch::Tensor debug_map_0 = torch::zeros({(long)num_rays, 3}, torch::device(device).dtype(torch::kFloat32));
         output.num_its = reinterpret_cast<unsigned long long*>(num_its.data_ptr());
         output.radiance = reinterpret_cast<float3 *>(radiance.data_ptr());
         output.transmittance = reinterpret_cast<float *>(transmittance.data_ptr());
         output.distance = reinterpret_cast<float*>(distance.data_ptr());
-        output.debug_map_0 = reinterpret_cast<float3 *>(debug_map_0.data_ptr());
+        output.debug_map_0 = nullptr;//reinterpret_cast<float3 *>(debug_map_0.data_ptr());
         output.debug_map_1 = nullptr;//reinterpret_cast<float3 *>(debug_map_1.data_ptr());
 
         if(dynamic_cast<kd::KdTracer*>(tracer.get())){
@@ -146,7 +150,6 @@ struct PyTracer {
         const double ms_frame = duration_cast<milliseconds>(high_resolution_clock::now()-frame_start).count();
 
         return py::dict("radiance"_a = radiance, "transmittance"_a = transmittance,
-                        "debug_map_0"_a = debug_map_0,
                         "time_ms"_a = ms_frame,
                         "num_its"_a = *reinterpret_cast<unsigned long*>(num_its.cpu().data_ptr()),
                         "distance"_a = distance

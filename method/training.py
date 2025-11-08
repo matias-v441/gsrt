@@ -58,6 +58,8 @@ class Training:
 
     def step(self, *, t_step, rays, gt_image) -> float:
 
+        self.model.train()
+
         self.model.iteration = self.start_iter + t_step
 
         self.model.optimizer.update_learning_rate(self.model.iteration)

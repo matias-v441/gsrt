@@ -7,6 +7,7 @@ from .trace_function import TraceFunction
 from . import Rays
 from .initialization import initialize
 from .checkpoint import load_checkpoint
+from extension import GaussiansTracer
 
 class Activations:
     def __init__(self, cfg):
@@ -115,7 +116,7 @@ class GaussianModel(nn.Module):
         self._max_sh_degree = max_sh_degree
         self._active_sh_degree = active_sh_degree
         self._scene_extent = scene_extent
-        self.iteration = iteration
+        self._iteration = iteration
 
         self._xyz = nn.Parameter(xyz.cuda())
         self._scaling = nn.Parameter(scaling.cuda())
@@ -125,9 +126,9 @@ class GaussianModel(nn.Module):
         self._features_rest = nn.Parameter(features_rest.cuda())
 
         self._white_background = white_bg
-        self.tracer = None
         self._optimizer = optimizer 
-
+        self._tracer = GaussiansTracer()
+        self.as_params = {"type": cfg.tracer_type}
 
     @staticmethod
     def from_dataset(cfg) -> 'GaussianModel':
@@ -220,7 +221,7 @@ class GaussianModel(nn.Module):
 
     def forward(self, rays: Rays):
         return TraceFunction.apply(self.opacity, self.xyz, self.scaling, self.rotation, self.features,
-                self.tracer, self.active_sh_degree, rays, self._white_background)
+                self._tracer, self.active_sh_degree, rays, self._white_background, self.training, self.as_params)
 
 GaussianModel.from_dataset = staticmethod(initialize)
 GaussianModel.from_checkpoint = staticmethod(load_checkpoint)

@@ -23,6 +23,8 @@ save_interval: 1000
 save_start_iter: 1000
 checkpoint_type: gsrt
 
+tracer_type: optix 
+
 datasets:
   blender: external://blender 
   mipnerf: external://mipnerf360

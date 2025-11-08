@@ -139,10 +139,8 @@ outputs/
 
 .vscode
 
-tetranerf/
 data/
 
-*retarded*
 *.jpg
 
 wandb/

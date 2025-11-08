@@ -8,6 +8,9 @@ using namespace gsrt;
 using namespace gsrt::kd_tracer;
 
 void KdTracer::load_gaussians(const GaussiansData& data, const ASParams& params) {
+    if(!std::holds_alternative<KdParams>(params)){
+        throw std::runtime_error("KdTracer: ASParams must be of type KdParams.");
+    }
     const auto& kd_params = std::get<KdParams>(params);
     if(kd_params.device >= 0){
         //std::cout << "Building KdTree on cuda:" << static_cast<int>(kd_params.device) << "..." << std::endl;

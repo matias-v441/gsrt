@@ -6,9 +6,9 @@ class TraceFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, part_opac, part_xyz, part_scale, part_rot, part_sh,
-                tracer, active_sh_deg, rays: Rays, white_background):
-
-        tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,active_sh_deg,{"type":"optix"})
+                tracer, active_sh_deg, rays: Rays, white_background: bool, update: bool, as_params: dict):
+        if not tracer.has_gaussians() or update:
+            tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,active_sh_deg,as_params)
         out = tracer.trace_fwd(rays.origins, rays.directions, rays.res_x, rays.res_y, white_background)
         ctx.rad = out["radiance"]
         ctx.trans = out["transmittance"]
@@ -44,4 +44,4 @@ class TraceFunction(torch.autograd.Function):
                 print(f"found NaN grad in {n}")
             grad[nan_mask] = 0.
         return grad_opacity, grad_xyz, grad_scale, grad_rot, grad_sh,\
-            None, None, None, None 
+            None, None, None, None, None, None

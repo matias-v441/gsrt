@@ -25,23 +25,10 @@ struct ASParamsBase {
 
 using OptixASParams = ASParamsBase;
 
-enum class CFType{
-    Default,
-    EmptySpaceBias,
-    Sorting,
-    SomethingElse
-};
-
 struct KdParams: ASParamsBase {
     int8_t device = -1; // -1: CPU, >=0: GPU id
     bool no_rebuild;
     size_t max_leaf_size = 4096;
-    //size_t max_depth = 32;
-    CFType cf_type;
-    float K_T = 2.;
-    float K_I = 3.;
-    float k1 = 3.;
-    float k2 = 1.25;
 };
 
 #ifndef __CUDA_ARCH__

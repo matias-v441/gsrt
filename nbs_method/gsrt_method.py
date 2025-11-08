@@ -11,11 +11,8 @@ from nerfbaselines import (
     cameras,Method, MethodInfo, ModelInfo, RenderOutput, Cameras, camera_model_to_int, Dataset
 )
 
-from argparse import ArgumentParser
-
 from random import randint
 
-from arguments import ModelParams, PipelineParams, OptimizationParams #  type: ignore
 #from scene import GaussianModel # type: ignore
 from scene.dataset_readers import storePly, fetchPly  # type: ignore
 from utils.loss_utils import l1_loss, ssim  # type: ignore
@@ -23,7 +20,6 @@ from utils.image_utils import psnr
 
 from lpipsPyTorch import lpips  # type: ignore
 
-from extension import GaussiansTracer
 from method import Rays
 from method.training import Training
 from method.initialization import initialize
@@ -49,7 +45,6 @@ class GSRTMethod(Method):
             self.model = load_checkpoint(self.cfg)
         else:
             self.model = initialize(self.cfg, self.train_dataset)
-        self.model.tracer = GaussiansTracer()
         if train_dataset is not None:
             self.training = Training(self.cfg, self.model)
             self.viewpoint_ids = torch.arange(len(self.train_dataset['cameras']))
@@ -148,8 +143,8 @@ class GSRTMethod(Method):
         res_x, res_y = camera_th.image_sizes
         rays = Rays(origins=ray_origins.contiguous(), directions=ray_directions.contiguous(),
                          res_x=res_x, res_y=res_y)
+        self.model.eval()
         img = self.model.forward(rays)
-
         return {"color":img.detach().cpu().reshape(res_y,res_x,3).numpy()}
 
     def save(self, path):
