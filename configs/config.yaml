@@ -10,6 +10,8 @@ evaluate: false
 train: false
 use_viewer: true
 
+gradcheck: false
+
 white_bg: false
 use_batched_rays: false
 batch_size: 4096

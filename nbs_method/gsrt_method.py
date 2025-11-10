@@ -93,11 +93,11 @@ class GSRTMethod(Method):
             batch = torch.randint(0,ray_origins.shape[1],(2**16,),device="cuda")
             batch_res = 2**8
             rays = Rays(origins=ray_origins[batch].contiguous(), directions=ray_directions[batch].contiguous(),
-                         res_x=batch_res, res_y=batch_res)
+                         res_x=batch_res.item(), res_y=batch_res.item())
             gt_image=gt_image[batch]
         else:  
             rays = Rays(origins=ray_origins.contiguous(), directions=ray_directions.contiguous(),
-                         res_x=res_x, res_y=res_y)
+                         res_x=res_x.item(), res_y=res_y.item())
 
         out = self.training.step(t_step=step, rays=rays, gt_image=gt_image)
 
@@ -126,6 +126,31 @@ class GSRTMethod(Method):
         psnr_value = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
         lpips_value = lpips(image, gt_image, net_type='vgg')
         return ssim_value.item(), psnr_value.item(), lpips_value.item()
+
+    
+    def gradcheck(self, vp_id=0) -> bool:
+        test_cameras = self.test_dataset['cameras']
+        def fit_distortion(x,name):
+            if x is not None and name == "distortion_parameters":
+                x = x[:,None,None,:]
+            return torch.from_numpy(x).contiguous().cuda()
+        cameras_th = test_cameras.apply(fit_distortion)
+        camera_th = cameras_th.__getitem__(vp_id)
+        xy = cameras.get_image_pixels(camera_th.image_sizes)
+
+        ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
+        res_x, res_y = camera_th.image_sizes
+        ray_origins = ray_origins.float().squeeze()
+        ray_directions = ray_directions.float().squeeze()
+
+        gt_image = self.transform_gt_image(torch.from_numpy(self.test_dataset['images'][vp_id]))
+
+        rays = Rays(origins=ray_origins.contiguous(), directions=ray_directions.contiguous(),
+                         res_x=res_x.item(), res_y=res_y.item())
+
+        def loss_fn(img, gt_image):
+            return l1_loss(img, gt_image)
+        return self.model.gradcheck(rays, gt_image, loss_fn, eps=1e-3, atol=3e-4, rtol=5e-2, nondet_tol=1e-2, fast_mode=True, raise_exception=True)
 
 
     @torch.no_grad()

@@ -31,7 +31,7 @@ def main(cfg: DictConfig):
     method_info = method_cls.get_method_info()
     train_dataset,test_dataset = None,None
     # load final checkpoint from previous run if exists
-    if cfg.resume_training and cfg.results_dir is not None and os.path.exists(cfg.results_dir):
+    if cfg.checkpoint is None and cfg.resume_training and cfg.results_dir is not None and os.path.exists(cfg.results_dir):
         cfg.checkpoint = os.path.join(cfg.results_dir, "checkpoint_final.pt")
     # require checkpoint if not training
     if not cfg.train and (cfg.checkpoint is None or not os.path.exists(cfg.checkpoint)): 
@@ -56,8 +56,15 @@ def main(cfg: DictConfig):
         test_dataset=test_dataset,
         config_overrides=cfg,
     )
-    model_info = model.get_info()
-    model_info["num_iterations"] = cfg.parameters.n_iterations
+
+    if cfg.gradcheck:
+        print("Running gradcheck...")
+        with tqdm(total=len(test_dataset["cameras"])) as pbar:
+            for i in range(len(test_dataset["cameras"])):
+                is_gradcorrect = model.gradcheck(i)
+                print(f"Gradcheck result: {is_gradcorrect}")
+                pbar.update()
+        quit()
 
     if cfg.use_viewer:
         stack = ExitStack()
@@ -76,8 +83,8 @@ def main(cfg: DictConfig):
     if cfg.train:
         import time
         start_time = time.time()
-        with tqdm(total=model_info["num_iterations"]) as pbar:
-            for step in range(model_info["num_iterations"]+1):
+        with tqdm(total=cfg.parameters.n_iterations) as pbar:
+            for step in range(cfg.parameters.n_iterations):
                 model.train_iteration(step)
                 pbar.update()
 

@@ -116,7 +116,7 @@ class GaussianModel(nn.Module):
         self._max_sh_degree = max_sh_degree
         self._active_sh_degree = active_sh_degree
         self._scene_extent = scene_extent
-        self._iteration = iteration
+        self.iteration = iteration
 
         self._xyz = nn.Parameter(xyz.cuda())
         self._scaling = nn.Parameter(scaling.cuda())
@@ -222,6 +222,57 @@ class GaussianModel(nn.Module):
     def forward(self, rays: Rays):
         return TraceFunction.apply(self.opacity, self.xyz, self.scaling, self.rotation, self.features,
                 self._tracer, self.active_sh_degree, rays, self._white_background, self.training, self.as_params)
+
+    def gradcheck(self, rays: Rays, gt_image, fn_loss, n_points=100, pad_x = None, pad_y = None, **kwargs) -> bool:
+        def func(opacity, xyz, scaling, rotation, features):
+            img = TraceFunction.apply(opacity, xyz, scaling, rotation, features,
+                self._tracer, self.active_sh_degree, rays, self._white_background, True, self.as_params)
+            return fn_loss(img, gt_image)
+        from torch.autograd import gradcheck
+        inputs = (self.opacity.detach(),
+                  self.xyz.detach(),
+                  self.scaling.detach(),
+                  self.rotation.detach(),
+                  self.features.detach())
+        for inp in inputs:
+            inp.requires_grad = True
+        # run pass with padded rays
+        all_rays = rays
+        full_gt_image = gt_image
+        u,v = torch.meshgrid(torch.arange(rays.res_x),torch.arange(rays.res_y),indexing='xy')
+        if pad_x is None and pad_y is None:
+            pad_x,pad_y = rays.res_x//4, rays.res_y//4
+        assert pad_x < rays.res_x//2 and pad_y < rays.res_y//2
+        mask = (u.flatten() >= pad_x) & (u.flatten() < (rays.res_x-pad_x)) \
+               & (v.flatten() >= pad_y) & (v.flatten() < (rays.res_y-pad_y))
+        sub_rays = Rays(origins=rays.origins[mask], directions=rays.directions[mask],
+                         res_x=rays.res_x-2*pad_x, res_y=rays.res_y-2*pad_y)
+        gt_image = gt_image[mask]
+        assert sub_rays.origins.shape[0] == (sub_rays.res_x*sub_rays.res_y)
+        rays = sub_rays
+        func(*inputs).backward()
+        rays = all_rays
+        gt_image = full_gt_image
+        # sample gaussians that received gradients
+        any_grad = any(torch.count_nonzero(inp.grad) != 0 for inp in inputs)
+        assert any_grad, "All grads are zero!"
+        mask = torch.zeros(self.num_gaussians, dtype=torch.bool, device=self._xyz.device)
+        for inp in inputs:
+            mask |= torch.any(inp.grad.view(self.num_gaussians,-1),dim=1)
+        ids = torch.nonzero(mask, as_tuple=True)[0][:n_points]
+        print(f"Running gradcheck on {ids.shape[0]} points...")
+        del inputs
+        torch.cuda.empty_cache()
+        torch.manual_seed(0)
+        torch.use_deterministic_algorithms(True)
+        inputs = (self.opacity.detach()[ids],
+                  self.xyz.detach()[ids],
+                  self.scaling.detach()[ids],
+                  self.rotation.detach()[ids],
+                  self.features.detach()[ids])
+        for inp in inputs:
+            inp.requires_grad = True
+        return gradcheck(func, inputs, **kwargs)
 
 GaussianModel.from_dataset = staticmethod(initialize)
 GaussianModel.from_checkpoint = staticmethod(load_checkpoint)
