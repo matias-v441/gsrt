@@ -100,7 +100,8 @@ message("CUDA_INCLUDE_DIRS: ${CUDA_INCLUDE_DIRS}")
 message("CUDAToolkit_INCLUDE_DIRS: ${CUDAToolkit_INCLUDE_DIRS}")
 
 set(OPTIX_KERNELS
-    src/optix_tracer/kernels/gs_tracer_bwd_grut.cu
+    #src/optix_tracer/kernels/gs_tracer_bwd_grut.cu
+    src/optix_tracer/kernels/tracer.cu
 )
 
 set(OPTIX_HEADERS
@@ -109,6 +110,8 @@ set(OPTIX_HEADERS
     src/utils/vec_math.h
     src/utils/Matrix.h
     src/utils/auxiliary.h
+    src/rendering/fwd.cuh
+    src/rendering/bwd.cuh
 )
 
 set(PTX_FILES "")
