@@ -75,6 +75,7 @@ struct RenderOutput {
 struct BaseRenderSettings {
     bool compute_grad;
     bool white_background;
+    bool deterministic;
 };
 
 using OptixRenderSettings = BaseRenderSettings;

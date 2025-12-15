@@ -385,69 +385,66 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
                                    const TracingParams &tracing_params
                                    ) {
     CUDA_CHECK(cudaSetDevice(device));
-
+    Params params;
+    int width, height;
+    params.handle = gaussians_structure->gas_handle();
     {
-        Params params;
-        int width, height;
-        params.handle = gaussians_structure->gas_handle();
-        {
-            const auto& r = tracing_params.rays;
-            params.ray_origins = r.ray_origins;
-            params.ray_directions = r.ray_directions;
-            width = r.width;
-            height = r.height;
-        }
-        auto& gs = gaussians_structure->gaussians();
-        params.num_gs = gs.numgs;
-        params.gs_xyz = gs.xyz;
-        params.gs_rotation = gs.rotation;
-        params.gs_scaling = gs.scaling;
-        params.gs_opacity = gs.opacity;
-        params.gs_sh = gs.sh;
-        params.sh_deg = gs.sh_deg;
-        //params.gs_color = gs.color;
-        params.gs_normals = gaussians_structure->normals();
-        {
-            auto s = std::get<OptixRenderSettings>(tracing_params.settings);
-            params.compute_grad = s.compute_grad;
-            params.white_background = s.white_background;
-        }
-        {
-            const auto& o = tracing_params.output;
-            params.radiance = o.radiance;
-            params.transmittance = o.transmittance;
-            params.debug_map_0 = o.debug_map_0;
-            params.debug_map_1 = o.debug_map_1;
-            params.num_its = o.num_its;
-            params.num_its_bwd = o.num_its_bwd;
-            params.distance = o.distance;
-        }
-        if (std::get<OptixRenderSettings>(tracing_params.settings).compute_grad) {
-            assert(tracing_params.bp_out.has_value());
-            const auto& bp_out = tracing_params.bp_out.value();
-            params.grad_xyz = bp_out.grad_xyz;
-            params.grad_rotation = bp_out.grad_rotation;
-            params.grad_scale = bp_out.grad_scale;
-            params.grad_opacity = bp_out.grad_opacity;
-            params.grad_sh = bp_out.grad_sh;
-            //params.grad_resp = bp_out.grad_resp;
-            //params.grad_color = bp_out.grad_color;
-            //params.grad_invRS = bp_out.grad_invRS;
-            assert(tracing_params.bp_in.has_value());
-            const auto& bp_in = tracing_params.bp_in.value();
-            params.dL_dC = bp_in.dL_dC;
-            params.radiance = bp_in.radiance;
-            params.transmittance = bp_in.transmittance;
-            params.distance = bp_in.distance;
-        }
-        CUDA_CHECK(cudaMemcpy(
-            reinterpret_cast<void *>(d_param),
-            &params, sizeof(params),
-            cudaMemcpyHostToDevice));
-        OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt, width, height, 1));
-        //OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt,
-        //                        tracing_params.num_rays, 1, 1));
-        CUDA_SYNC_CHECK();
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        const auto& r = tracing_params.rays;
+        params.ray_origins = r.ray_origins;
+        params.ray_directions = r.ray_directions;
+        width = r.width;
+        height = r.height;
     }
+    auto& gs = gaussians_structure->gaussians();
+    params.num_gs = gs.numgs;
+    params.gs_xyz = gs.xyz;
+    params.gs_rotation = gs.rotation;
+    params.gs_scaling = gs.scaling;
+    params.gs_opacity = gs.opacity;
+    params.gs_sh = gs.sh;
+    params.sh_deg = gs.sh_deg;
+    //params.gs_color = gs.color;
+    params.gs_normals = gaussians_structure->normals();
+    {
+        auto s = std::get<OptixRenderSettings>(tracing_params.settings);
+        params.compute_grad = s.compute_grad;
+        params.white_background = s.white_background;
+    }
+    {
+        const auto& o = tracing_params.output;
+        params.radiance = o.radiance;
+        params.transmittance = o.transmittance;
+        params.debug_map_0 = o.debug_map_0;
+        params.debug_map_1 = o.debug_map_1;
+        params.num_its = o.num_its;
+        params.num_its_bwd = o.num_its_bwd;
+        params.distance = o.distance;
+    }
+    if (std::get<OptixRenderSettings>(tracing_params.settings).compute_grad) {
+        assert(tracing_params.bp_out.has_value());
+        const auto& bp_out = tracing_params.bp_out.value();
+        params.grad_xyz = bp_out.grad_xyz;
+        params.grad_rotation = bp_out.grad_rotation;
+        params.grad_scale = bp_out.grad_scale;
+        params.grad_opacity = bp_out.grad_opacity;
+        params.grad_sh = bp_out.grad_sh;
+        //params.grad_resp = bp_out.grad_resp;
+        //params.grad_color = bp_out.grad_color;
+        //params.grad_invRS = bp_out.grad_invRS;
+        assert(tracing_params.bp_in.has_value());
+        const auto& bp_in = tracing_params.bp_in.value();
+        params.dL_dC = bp_in.dL_dC;
+        params.radiance = bp_in.radiance;
+        params.transmittance = bp_in.transmittance;
+        params.distance = bp_in.distance;
+    }
+    CUDA_CHECK(cudaMemcpy(
+        reinterpret_cast<void *>(d_param),
+        &params, sizeof(params),
+        cudaMemcpyHostToDevice));
+    OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt, width, height, 1));
+    //OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(params), &sbt,
+    //                        tracing_params.num_rays, 1, 1));
+    CUDA_SYNC_CHECK();
+    CUDA_CHECK(cudaStreamSynchronize(stream));
 }
