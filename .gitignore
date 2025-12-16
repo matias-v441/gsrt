@@ -156,3 +156,5 @@ _*
 !__init__.py
 *.sh
 *.json
+*.ptx
+ptx_embedded.cpp

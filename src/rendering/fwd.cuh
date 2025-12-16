@@ -4,7 +4,7 @@ using namespace util;
 
 constexpr float eps = 1e-6;
 constexpr float min_kernel_density = 0.0113f;
-constexpr float min_alpha = 1/255.f; //0.01f;
+constexpr float min_alpha = 1/255.f; 
 constexpr float max_alpha = 0.99f;
 
 __device__ Matrix3x3 construct_rotation(float4 q){
@@ -34,7 +34,7 @@ __device__ __forceinline__ Matrix3x3 construct_inv_RS(const float4& rot, const f
 
 __device__ bool compute_response(
     const float3& o, const float3& d, const float3& mu,
-    const float opacity, const Matrix3x3& inv_RS,unsigned int chit_id,
+    const float opacity, const Matrix3x3& inv_RS,
     float& alpha, float& tmax){
 
     float3 og = inv_RS*(mu-o);

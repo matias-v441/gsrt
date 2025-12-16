@@ -2,6 +2,8 @@
 import torch
 from . import Rays
 
+num = 0
+
 class TraceFunction(torch.autograd.Function):
 
     @staticmethod
@@ -19,6 +21,9 @@ class TraceFunction(torch.autograd.Function):
         out_color = out["radiance"]
         if white_background:
             out_color = out_color + out["transmittance"]
+        global num
+        num = max(out["num_its"],num)
+        #print("num_its", num)
         return out_color
 
     @staticmethod

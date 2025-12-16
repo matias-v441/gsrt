@@ -18,6 +18,10 @@ constexpr unsigned int chunk_size = 16;
 
 constexpr float Tmin = 0.001;
 
+#define SAMPLE_BASED_ORDER false
+
+#define ENSURE_CORRECT_ORDER false
+
 extern "C" __global__ void __raygen__rg() {
 
     // Lookup our location within the launch grid
@@ -54,8 +58,7 @@ extern "C" __global__ void __raygen__rg() {
     Acc acc_full{};
     acc_full.radiance = params.radiance[id];
     acc_full.transmittance = params.transmittance[id];
-    //unsigned int* uip_acc_full = reinterpret_cast<unsigned int *>(&acc_full);
-
+    // int last_hit = -1; -> skip repeating hit
     while((min_dist < max_dist) && (acc.transmittance > Tmin || params.compute_grad)){
         for(int i=0; i<chunk_size;++i){
             hits[i].thit = FLT_MAX;
@@ -83,14 +86,14 @@ extern "C" __global__ void __raygen__rg() {
 #pragma unroll
         for(int i=0; i<chunk_size;++i){
             const Hit chit = hits[i];
+            // if(last_hit == chit.id) continue; -> skip repeating hit
             if((chit.thit != FLT_MAX) && (acc.transmittance > Tmin || params.compute_grad)){
                 float resp,thit; 
                 bool accept = compute_response(ray_origin,
                                 ray_direction,
                                 params.gs_xyz[chit.id],
                                 params.gs_opacity[chit.id],
-                                construct_inv_RS(params.gs_rotation[chit.id],params.gs_scaling[chit.id]),
-                                chit.id,
+                                construct_inv_RS(params.gs_rotation[chit.id],params.gs_scaling[chit.id]), 
                                 resp,thit);
                 if(accept)
                 {
@@ -98,14 +101,10 @@ extern "C" __global__ void __raygen__rg() {
                     compute_radiance(params.gs_sh,params.sh_deg,chit.id,ray_origin,ray_direction,rad,clamped);
                     acc.radiance += rad*resp*acc.transmittance;
                     if(params.compute_grad){
-                        const uint3 launch_idxy = optixGetLaunchIndex();
-                        const uint3 launch_dim = optixGetLaunchDimensions();
-                        const int launch_id = launch_idxy.x + launch_idxy.y*launch_dim.x;
-                        const float3 dL_dC = params.dL_dC[launch_id];
                         add_grad_at(params.gs_rotation,params.gs_scaling,params.gs_xyz,params.gs_opacity,
                             params.gs_sh,params.sh_deg,params.grad_sh,
                             params.white_background,
-                            dL_dC,
+                            params.dL_dC[id],
                             params.grad_rotation,params.grad_scale,params.grad_xyz,params.grad_opacity,
                             acc,rad,acc_full,chit.id,
                             ray_origin+ray_direction*thit,
@@ -113,10 +112,11 @@ extern "C" __global__ void __raygen__rg() {
                     }
                     acc.transmittance *= (1.-resp);
                 }
-                min_dist = fmaxf(min_dist,chit.thit);
+                min_dist = chit.thit; // same as fmaxf(min_dist, chit.thit);
+                // last_hit = chit.id; -> skip repeating hit
             }
         }
-        //if(hits[hits_max_capacity-1].thit == FLT_MAX) break;
+        if(hits[chunk_size-1].thit == FLT_MAX) break; // buffer is not full->finish
     }
     params.radiance[id] = acc.radiance;
     params.transmittance[id] = acc.transmittance;
@@ -141,19 +141,23 @@ extern "C" __global__ void __anyhit__fwd() {
 
     Hit hit;
     hit.id = hit_id;
+#if SAMPLE_BASED_ORDER
     float _resp,_thit; 
-    // compute_response(optixGetWorldRayOrigin(),
-    //                 optixGetWorldRayDirection(),
-    //                 params.gs_xyz[hit_id],
-    //                 params.gs_opacity[hit_id],
-    //                 construct_inv_RS(params.gs_rotation[hit_id],params.gs_scaling[hit_id]),
-    //                 _resp,_thit);
-    _thit = optixGetRayTmax();
-    hit.thit = _thit;//optixGetRayTmax();
-    //if(_resp < respMin){
-    //    optixIgnoreIntersection();
-    //    return;
-    //}
+    if(!compute_response(optixGetWorldRayOrigin(),
+        optixGetWorldRayDirection(),
+        params.gs_xyz[hit_id],
+        params.gs_opacity[hit_id],
+        construct_inv_RS(params.gs_rotation[hit_id],params.gs_scaling[hit_id]),
+        _resp,_thit)){
+        optixIgnoreIntersection();
+        return;
+    }
+    hit.thit = fmaxf(_thit,optixGetRayTmax()); // -> skip repeating hit
+#else
+    float _thit = optixGetRayTmax();
+    hit.thit = _thit;
+#endif
+    
     if(hit.thit < hitq[chunk_size-1].thit)
     {
 #pragma unroll
@@ -165,9 +169,14 @@ extern "C" __global__ void __anyhit__fwd() {
             }
         }
 
+#if !ENSURE_CORRECT_ORDER
         if(_thit < hitq[chunk_size-1].thit)
             optixIgnoreIntersection();
+#endif
     }
+#if ENSURE_CORRECT_ORDER
+    optixIgnoreIntersection();
+#endif
 }
 
 extern "C" __global__ void __anyhit__bwd() {

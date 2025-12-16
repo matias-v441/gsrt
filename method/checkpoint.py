@@ -38,6 +38,8 @@ def load_checkpoint(cfg):
 
     if cfg["checkpoint_type"] == '3dgs':
         act = Activations(cfg)
+        ch = ch[0]
+        ch = {'xyz':ch[1],'scaling':ch[4],'rotation':ch[5],'opacity':ch[6],'f_dc':ch[2],'f_rest':ch[3],'sh_deg':ch[0]}
         return GaussianModel(cfg,
                 activations=act,
                 xyz=ch['xyz'].detach().cuda(),

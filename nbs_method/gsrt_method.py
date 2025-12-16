@@ -68,8 +68,12 @@ class GSRTMethod(Method):
         #         raise RuntimeError("could not patch loadCam!")
         # viewpoint_cam = self._viewpoint_stack.pop(randint(0, len(self._viewpoint_stack) - 1))
         random.seed(step)
-        vp_id = self.viewpoint_ids[randint(0, self.viewpoint_ids.shape[0] - 1)] 
         train_cameras = self.train_dataset['cameras']
+        # batch_id = step%len(train_cameras)
+        # if batch_id == 0:
+        #     self.viewpoint_ids = torch.randperm(len(train_cameras))
+        # vp_id = self.viewpoint_ids[batch_id] 
+        vp_id = self.viewpoint_ids[randint(0, self.viewpoint_ids.shape[0] - 1)]
         #cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
         #camera_th = cameras_th.__getitem__(vp_id)
         def fit_distortion(x,name):
