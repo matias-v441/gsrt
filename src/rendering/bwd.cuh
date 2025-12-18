@@ -21,17 +21,8 @@ __device__ __forceinline__ void atomicAdd_float3(float3 &acc, const float3 &val)
 
 __device__ void compute_radiance_bwd_at(const float3* shs, int sh_deg, float3* grad_sh,
 	 int gs_id, const float3& ray_origin, const float3& ray_direction,
-    const float3& dL_dcolor, float3& grad_xyz, const bool* clamped)
+    const float3& dL_dcolor, const bool* clamped)
 {
-    // atomicAdd_float3(params.grad_color[gs_id], dL_dcolor);
-    // grad_xyz = make_float3(0.f);
-    // if(params.sh_deg == -1) return;
-
-	// same as forward -----
-
-    //const float3 dir = -params.ray_directions[idx.x];
-    //const float3 mu = params.gs_xyz[gs_id];
-    //const float3 dir = normalize(mu-ray_origin);
     const float3 dir = ray_direction;
 
     const float3* sh = shs + gs_id*16;
@@ -55,10 +46,8 @@ __device__ void compute_radiance_bwd_at(const float3* shs, int sh_deg, float3* g
 	// Target location for this Gaussian to write SH gradients to
     float3 *dL_dsh = grad_sh + gs_id*16;
 
-	// No tricks here, just high school-level calculus.
 	float dRGBdsh0 = SH_C0;
 
-	//dL_dsh[0] = dRGBdsh0 * dL_dRGB;
     atomicAdd_float3(dL_dsh[0], dRGBdsh0 * dL_dRGB);
 
 	if (deg > 0)
@@ -69,10 +58,6 @@ __device__ void compute_radiance_bwd_at(const float3* shs, int sh_deg, float3* g
 
         // If color function is view dependant we might accumulate grad_color for each view instead
         // if it is ray dependant we should accumulate grad_sh directly
-
-		//dL_dsh[1] = dRGBdsh1 * dL_dRGB;
-		//dL_dsh[2] = dRGBdsh2 * dL_dRGB;
-		//dL_dsh[3] = dRGBdsh3 * dL_dRGB;
 
         atomicAdd_float3(dL_dsh[1], dRGBdsh1 * dL_dRGB);
 		atomicAdd_float3(dL_dsh[2], dRGBdsh2 * dL_dRGB);
@@ -92,11 +77,6 @@ __device__ void compute_radiance_bwd_at(const float3* shs, int sh_deg, float3* g
 			float dRGBdsh6 = SH_C2[2] * (2.f * zz - xx - yy);
 			float dRGBdsh7 = SH_C2[3] * xz;
 			float dRGBdsh8 = SH_C2[4] * (xx - yy);
-			//dL_dsh[4] = dRGBdsh4 * dL_dRGB;
-			//dL_dsh[5] = dRGBdsh5 * dL_dRGB;
-			//dL_dsh[6] = dRGBdsh6 * dL_dRGB;
-			//dL_dsh[7] = dRGBdsh7 * dL_dRGB;
-			//dL_dsh[8] = dRGBdsh8 * dL_dRGB;
 
             atomicAdd_float3(dL_dsh[4], dRGBdsh4 * dL_dRGB);
 			atomicAdd_float3(dL_dsh[5], dRGBdsh5 * dL_dRGB);
@@ -117,13 +97,6 @@ __device__ void compute_radiance_bwd_at(const float3* shs, int sh_deg, float3* g
 				float dRGBdsh13 = SH_C3[4] * x * (4.f * zz - xx - yy);
 				float dRGBdsh14 = SH_C3[5] * z * (xx - yy);
 				float dRGBdsh15 = SH_C3[6] * x * (xx - 3.f * yy);
-				//dL_dsh[9] = dRGBdsh9 * dL_dRGB;
-				//dL_dsh[10] = dRGBdsh10 * dL_dRGB;
-				//dL_dsh[11] = dRGBdsh11 * dL_dRGB;
-				//dL_dsh[12] = dRGBdsh12 * dL_dRGB;
-				//dL_dsh[13] = dRGBdsh13 * dL_dRGB;
-				//dL_dsh[14] = dRGBdsh14 * dL_dRGB;
-				//dL_dsh[15] = dRGBdsh15 * dL_dRGB;
 
                 atomicAdd_float3(dL_dsh[9], dRGBdsh9 * dL_dRGB);
 				atomicAdd_float3(dL_dsh[10], dRGBdsh10 * dL_dRGB);
@@ -160,19 +133,6 @@ __device__ void compute_radiance_bwd_at(const float3* shs, int sh_deg, float3* g
 			}
 		}
 	}
-
-	// The view direction is an input to the computation. View direction
-	// is influenced by the Gaussian's mean, so SHs gradients
-	// must propagate back into 3D position.
-	float3 dL_ddir{dot(dRGBdx, dL_dRGB), dot(dRGBdy, dL_dRGB), dot(dRGBdz, dL_dRGB)};
-
-	// Account for normalization of direction
-	float3 dL_dmean = dnormvdv(float3{ dir.x, dir.y, dir.z },
-                               float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
-
-	// Gradients of loss w.r.t. Gaussian means, but only the portion 
-	// that is caused because the mean affects the view-dependent color.
-	grad_xyz = make_float3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
 }
 
 struct Acc{
@@ -180,7 +140,7 @@ struct Acc{
     float transmittance;
 };
 
-__device__ __forceinline__ void add_grad_at(
+__device__ __forceinline__ void add_grad_at_naive(
     const float4* gs_rotation, const float3* gs_scaling, const float3* gs_xyz, const float* gs_opacity,
     const float3* shs, int sh_deg, float3* grad_sh,
     bool white_background,
@@ -304,9 +264,7 @@ __device__ __forceinline__ void add_grad_at(
 
     const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
     const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
-    float3 sh_grad_xyz;
-    compute_radiance_bwd_at(shs,sh_deg,grad_sh,chit_id,ray_origin,ray_direction,dL_dcolor,sh_grad_xyz,clamped);
-    //dL_dmu += sh_grad_xyz;
+    compute_radiance_bwd_at(shs,sh_deg,grad_sh,chit_id,ray_origin,ray_direction,dL_dcolor,clamped);
 
     atomicAdd_float3(grad_xyz[chit_id],dL_dmu);
     //grad_xyz += dL_dmu;
@@ -323,3 +281,146 @@ __device__ __forceinline__ void add_grad_at(
     //grad_rotation += dL_dq;
 }
 
+static __device__ inline float3 safe_normalize_bw(const float3& v, const float3& d_out) {
+    const float l = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (l > 0.0f) {
+        const float il  = rsqrtf(l);
+        const float il3 = (il * il * il);
+        return il * d_out - il3 * make_float3(d_out.x * (v.x * v.x) + d_out.y * (v.y * v.x) + d_out.z * (v.z * v.x),
+                                              d_out.x * (v.x * v.y) + d_out.y * (v.y * v.y) + d_out.z * (v.z * v.y),
+                                              d_out.x * (v.x * v.z) + d_out.y * (v.y * v.z) + d_out.z * (v.z * v.z));
+    }
+    return make_float3(0);
+}
+
+__device__ __forceinline__ void add_grad_at(
+    const float4* gs_rotation, const float3* gs_scaling, const float3* gs_xyz, const float* gs_opacity,
+    const float3* shs, int sh_deg, float3* grad_sh,
+    bool white_background,
+    float3 dL_dC,
+    float4* grad_rotation, float3* grad_scaling, float3* grad_xyz, float* grad_opacity,
+    const Acc& acc, const float3& rad, const Acc& acc_full,
+    int chit_id, const float3& csamp,
+    const float resp, 
+    const float3 ray_origin,
+    const float3 ray_direction,
+    const bool* clamped
+    ){
+
+    //atomicAdd(params.num_its_bwd,1ull);
+
+    const float4 quat = gs_rotation[chit_id];
+    const float3 scale = gs_scaling[chit_id];
+    const float3 pos = gs_xyz[chit_id];
+    const float opacity = gs_opacity[chit_id];
+
+    float3 background = white_background? make_float3(1.f) : make_float3(0.f);
+
+    Matrix3x3 RT = construct_rotation(quat).transpose();
+    const float3 iscl = make_float3(1/scale.x,1/scale.y,1/scale.z);
+    const float3 o_pos = ray_origin-pos;
+    const float3 RT_o_pos = RT*o_pos;
+    const float3 og = iscl*RT_o_pos;
+    const float3 dg_unorm = iscl*(RT*ray_direction);
+    const float3 dg = safe_normalize(dg_unorm);
+    const float3 dg_x_og = cross(dg,og);
+    const float tmax = dot(dg_x_og,dg_x_og);
+    const float G = expf(-0.5f*tmax);
+
+    const float Tnext = (1.f-resp)*acc.transmittance;
+    const float Tmin = 0.001;
+    const float3 C_b = fmaxf(make_float3(0),
+        Tnext > Tmin? (acc_full.radiance-acc.radiance)/Tnext : make_float3(0) 
+        );
+    const float3 dC_dresp = acc.transmittance*(rad-C_b);
+
+    const float dL_dresp = dot(dL_dC,dC_dresp);
+    const float dL_dG = dL_dresp*opacity;
+    const float dL_dt = dL_dG*(-0.5f*G);
+
+    const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
+
+    const float3 dL_d_dg_x_og_ = dL_dt*(2 * dg_x_og);
+    const float3 dL_ddg = make_float3(
+        dL_d_dg_x_og_.z * og.y - dL_d_dg_x_og_.y * og.z,
+        dL_d_dg_x_og_.x * og.z - dL_d_dg_x_og_.z * og.x,
+        dL_d_dg_x_og_.y * og.x - dL_d_dg_x_og_.x * og.y);
+    const float3 dL_dog = make_float3(
+        dL_d_dg_x_og_.y * dg.z - dL_d_dg_x_og_.z * dg.y,
+        dL_d_dg_x_og_.z * dg.x - dL_d_dg_x_og_.x * dg.z,
+        dL_d_dg_x_og_.x * dg.y - dL_d_dg_x_og_.y * dg.x);
+
+    const float3 dL_ddg_unorm = safe_normalize_bw(dg_unorm,dL_ddg);
+
+    const Matrix3x3 dog_dmu = (-1.f)*inv_RS;
+    const float3 dL_dmu = dog_dmu.transpose()*dL_dog;//^T
+
+    Matrix3x3 inv_RSS = inv_RS;
+    inv_S_times_M_(scale,inv_RSS);
+    const float3 dog_ds_diag = (-1.f)*inv_RSS*o_pos;
+    const float3 ddg_ds_diag = (-1.f)*inv_RSS*ray_direction;
+    const float3 dL_ds = dL_dog*dog_ds_diag + dL_ddg_unorm*ddg_ds_diag;
+
+    const float qr=quat.x, qi=quat.y, qj=quat.z, qk=quat.w;
+    Matrix3x3 dR_dqr({
+        0.f, qk, -qj,
+        -qk, 0.f, qi,
+        qj, -qi, 0.f
+    });
+    //dR_dqr *= 2.f; // do it in the end
+    Matrix3x3 dR_dqi({
+        0.f, qj, qk,
+        qj, -2.f*qi, qr,
+        qk, -qr, -2.f*qi
+    });
+    //dR_dqi *= 2.f;
+    Matrix3x3 dR_dqj({
+        -2.f*qj, qi, -qr,
+        qi, 0.f, qk,
+        qr, qk, -2.f*qj
+    });
+    //dR_dqj *= 2.f;
+    Matrix3x3 dR_dqk({
+        -2.f*qk, qr, qi,
+        -qr, -2.f*qk, qj,
+        qi, qj, 0.f
+    });
+    //dR_dqk *= 2.f;
+
+    inv_S_times_M_(scale,dR_dqr);
+    inv_S_times_M_(scale,dR_dqi);
+    inv_S_times_M_(scale,dR_dqj);
+    inv_S_times_M_(scale,dR_dqk);
+
+    const float3 dog_dqr = dR_dqr*o_pos;
+    const float3 dog_dqi = dR_dqi*o_pos;
+    const float3 dog_dqj = dR_dqj*o_pos;
+    const float3 dog_dqk = dR_dqk*o_pos;
+
+    const float3 ddg_dqr = dR_dqr*ray_direction;
+    const float3 ddg_dqi = dR_dqi*ray_direction;
+    const float3 ddg_dqj = dR_dqj*ray_direction;
+    const float3 ddg_dqk = dR_dqk*ray_direction;
+
+    const float4 dL_dq = 2.f* make_float4(
+        dot(dL_dog,dog_dqr)+dot(dL_ddg_unorm,ddg_dqr),
+        dot(dL_dog,dog_dqi)+dot(dL_ddg_unorm,ddg_dqi),
+        dot(dL_dog,dog_dqj)+dot(dL_ddg_unorm,ddg_dqj),
+        dot(dL_dog,dog_dqk)+dot(dL_ddg_unorm,ddg_dqk)
+    );
+
+    atomicAdd(&grad_opacity[chit_id],dL_dresp*G);
+
+    const float3 dC_dcolor_diag = make_float3(resp*acc.transmittance);
+    const float3 dL_dcolor = dL_dC * dC_dcolor_diag;
+    compute_radiance_bwd_at(shs,sh_deg,grad_sh,chit_id,ray_origin,ray_direction,dL_dcolor,clamped);
+
+    atomicAdd_float3(grad_xyz[chit_id],dL_dmu);
+
+    atomicAdd_float3(grad_scaling[chit_id],dL_ds);
+
+    atomicAdd(&grad_rotation[chit_id].x,dL_dq.x);
+    atomicAdd(&grad_rotation[chit_id].y,dL_dq.y);
+    atomicAdd(&grad_rotation[chit_id].z,dL_dq.z);
+    atomicAdd(&grad_rotation[chit_id].w,dL_dq.w);
+}

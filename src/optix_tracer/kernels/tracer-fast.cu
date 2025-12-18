@@ -80,7 +80,7 @@ extern "C" __global__ void __raygen__rg() {
                                 ray_direction,
                                 params.gs_xyz[chit.id],
                                 params.gs_opacity[chit.id],
-                                construct_inv_RS(params.gs_rotation[chit.id],params.gs_scaling[chit.id]), 
+                                params.gs_rotation[chit.id],params.gs_scaling[chit.id], 
                                 resp,thit);
                 if(accept)
                 {
@@ -170,7 +170,7 @@ extern "C" __global__ void __raygen__bwd() {
                                 ray_direction,
                                 params.gs_xyz[chit.id],
                                 params.gs_opacity[chit.id],
-                                construct_inv_RS(params.gs_rotation[chit.id],params.gs_scaling[chit.id]), 
+                                params.gs_rotation[chit.id],params.gs_scaling[chit.id], 
                                 resp,thit);
                 if(accept)
                 {

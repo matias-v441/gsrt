@@ -32,11 +32,11 @@ __device__ __forceinline__ Matrix3x3 construct_inv_RS(const float4& rot, const f
     return RT;
 }
 
-__device__ bool compute_response(
+__device__ bool compute_response_naive(
     const float3& o, const float3& d, const float3& mu,
-    const float opacity, const Matrix3x3& inv_RS,
+    const float opacity, const float4& rotation, const float3& scaling,
     float& alpha, float& tmax){
-
+	const Matrix3x3 inv_RS = construct_inv_RS(rotation, scaling);
     float3 og = inv_RS*(mu-o);
     float3 dg = inv_RS*d;
     tmax = dot(og,dg)/max(eps,dot(dg,dg));
@@ -48,6 +48,28 @@ __device__ bool compute_response(
     alpha = min(max_alpha,opacity*resp);
 
     return (alpha > min_alpha) && (resp > min_kernel_density);
+}
+
+static __device__ inline float3 safe_normalize(float3 v) {
+    const float l = v.x * v.x + v.y * v.y + v.z * v.z;
+    return l > 0.0f ? (v * rsqrtf(l)) : v;
+}
+
+__device__ bool compute_response(
+    const float3& o, const float3& d, const float3& mu,
+    const float opacity, const float4& rotation, const float3& scaling,
+    float& alpha, float& tmax){
+
+	Matrix3x3 RT = construct_rotation(rotation).transpose();
+	const float3 iscl = make_float3(1/scaling.x,1/scaling.y,1/scaling.z);
+	const float3 og = iscl*(RT*(mu-o));
+	const float3 dg = safe_normalize(iscl*(RT*d));
+	const float3 dg_x_og = cross(dg,og);
+	tmax = dot(dg_x_og,dg_x_og);
+    float G = expf(-.5f*tmax);
+    if(G < min_kernel_density) return false;
+    alpha = min(max_alpha, opacity*G);
+    return (alpha > min_alpha) && (G > min_kernel_density);
 }
 
 __device__ const float SH_C0 = 0.28209479177387814f;
@@ -72,15 +94,7 @@ __device__ const float SH_C3[] = {
 __device__ void compute_radiance(const float3* shs, int sh_deg, unsigned int gs_id, const float3 &ray_origin,
      const float3& ray_direction, float3& rad, bool *clamped){
 
-    //const int deg = params.sh_deg;
-    //if(deg == -1){
-    //    rad = params.gs_color[gs_id];
-    //    return;
-    //}
-    //const float3 dir = -ray_direction;
     const float3 dir = ray_direction;
-    //const float3 mu = params.gs_xyz[gs_id];
-    //const float3 dir = normalize(mu-ray_origin);
 
     const float3* sh = shs + gs_id*16;
 
@@ -119,11 +133,9 @@ __device__ void compute_radiance(const float3* shs, int sh_deg, unsigned int gs_
 	}
 	result += make_float3(.5f);
 
-    //printf("RAD_res %f %f %f\n", result.x,result.y,result.z);
 	clamped[0] = (result.x < 0);
 	clamped[1] = (result.y < 0);
 	clamped[2] = (result.z < 0);
 
 	rad = {max(result.x,0.f),max(result.y,0.f),max(result.z,0.f)};
-    //printf("RAD %f %f %f\n", rad.x,rad.y,rad.z);
 }

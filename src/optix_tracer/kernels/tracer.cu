@@ -1,11 +1,12 @@
 #include <optix.h>
 #include "optix_types.h"
 #include <float.h>
-#include "rendering/bwd.cuh"
 
 extern "C" {
 __constant__ Params params;
 }
+
+#include "rendering/bwd.cuh"
 
 struct Hit{
     int id;
@@ -93,7 +94,7 @@ extern "C" __global__ void __raygen__rg() {
                                 ray_direction,
                                 params.gs_xyz[chit.id],
                                 params.gs_opacity[chit.id],
-                                construct_inv_RS(params.gs_rotation[chit.id],params.gs_scaling[chit.id]), 
+                                params.gs_rotation[chit.id],params.gs_scaling[chit.id], 
                                 resp,thit);
                 if(accept)
                 {
@@ -147,7 +148,7 @@ extern "C" __global__ void __anyhit__fwd() {
         optixGetWorldRayDirection(),
         params.gs_xyz[hit_id],
         params.gs_opacity[hit_id],
-        construct_inv_RS(params.gs_rotation[hit_id],params.gs_scaling[hit_id]),
+        params.gs_rotation[hit_id],params.gs_scaling[hit_id],
         _resp,_thit)){
         optixIgnoreIntersection();
         return;

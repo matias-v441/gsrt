@@ -205,7 +205,7 @@ extern "C" __global__ void __anyhit__fwd() {
                     optixGetWorldRayDirection(),
                     params.gs_xyz[hit_id],
                     params.gs_opacity[hit_id],
-                    construct_inv_RS(params.gs_rotation[hit_id],params.gs_scaling[hit_id]),
+                    params.gs_rotation[hit_id],params.gs_scaling[hit_id],
                     resp,thit)){
         optixIgnoreIntersection();
         return;
@@ -306,13 +306,12 @@ extern "C" __global__ void __anyhit__bwd() {
     }
 
     const unsigned int hit_id = optixGetPrimitiveIndex()/triagPerParticle;
-    const Matrix3x3 inv_RS = construct_inv_RS(params.gs_rotation[hit_id],params.gs_scaling[hit_id]);
     float resp,thit; 
     if(!compute_response(origin,
                     direction,
                     params.gs_xyz[hit_id],
                     params.gs_opacity[hit_id],
-                    inv_RS,
+                    params.gs_rotation[hit_id],params.gs_scaling[hit_id],
                     resp,thit)){
         optixIgnoreIntersection();
         return;
