@@ -8,39 +8,22 @@ __constant__ Params params;
 }
 
 struct Hit{
-    int id;
-    float thit;
+    unsigned int id;
+    unsigned int thit; // float
 };
-
-constexpr int triagPerParticle = 20;
-
-constexpr unsigned int chunk_size = 16;
 
 constexpr float Tmin = 0.001;
 
-#define SAMPLE_BASED_ORDER false
-
-#define ENSURE_CORRECT_ORDER false
-
 extern "C" __global__ void __raygen__rg() {
 
-    // Lookup our location within the launch grid
     const uint3 idxy = optixGetLaunchIndex();
     const uint3 dim = optixGetLaunchDimensions();
     const int id = idxy.x + idxy.y*dim.x;
 
-    // Map our launch idx to a screen location and create a ray from the camera
-    // location through the screen
     const float3 ray_origin = params.ray_origins[id];
     const float3 ray_direction = params.ray_directions[id];
 
-    Hit hits[chunk_size];
-
-    unsigned int p_hits[2];
-    Hit* hits_ptr = reinterpret_cast<Hit*>(hits);
-    memcpy(p_hits, &hits_ptr, sizeof(void*));
-
-    unsigned int hits_size = 0;
+    Hit hits[16];
 
     float max_dist = 1e16f; 
     float min_dist = 0.f;
@@ -53,16 +36,19 @@ extern "C" __global__ void __raygen__rg() {
     Acc acc{};
     acc.radiance = make_float3(0.f);
     acc.transmittance = 1.f;
-    unsigned int* uip_acc = reinterpret_cast<unsigned int *>(&acc);
 
     Acc acc_full{};
     acc_full.radiance = params.radiance[id];
     acc_full.transmittance = params.transmittance[id];
-    // int last_hit = -1; -> skip repeating hit
+
+    const unsigned int uint_flt_max = __float_as_uint(FLT_MAX);
+
     while((min_dist < max_dist) && (acc.transmittance > Tmin || params.compute_grad)){
-        for(int i=0; i<chunk_size;++i){
-            hits[i].thit = FLT_MAX;
+#pragma unroll
+        for(int i=0; i<16;++i){
+            hits[i].thit = uint_flt_max;
         }
+#define h(i) hits[i].id,hits[i].thit
         optixTrace(
             OPTIX_PAYLOAD_TYPE_ID_0,
             params.handle,
@@ -77,17 +63,18 @@ extern "C" __global__ void __raygen__rg() {
             0,  // SBT offset   -- See SBT discussion
             2,  // SBT stride   -- See SBT discussion
             0,  // missSBTIndex -- See SBT discussion
-            uip_acc[0],uip_acc[1],uip_acc[2],uip_acc[3],
-            p_hits[0],p_hits[1],hits_size,hits_size);
+            h(0),h(1),h(2),h(3),h(4),h(5),h(6),h(7),h(8),h(9),h(10),h(11),h(12),h(13),h(14),h(15)
+            );
 
-        if(hits[0].thit == FLT_MAX){
+        if(hits[0].thit == uint_flt_max){
             break;
         }
 #pragma unroll
-        for(int i=0; i<chunk_size;++i){
-            const Hit chit = hits[i];
+        for(int i=0; i<16;++i){
+            Hit chit = hits[i];
+            chit.id /= 20;
             // if(last_hit == chit.id) continue; -> skip repeating hit
-            if((chit.thit != FLT_MAX) && (acc.transmittance > Tmin || params.compute_grad)){
+            if((chit.thit != uint_flt_max) && (acc.transmittance > Tmin || params.compute_grad)){
                 float resp,thit; 
                 bool accept = compute_response(ray_origin,
                                 ray_direction,
@@ -112,11 +99,10 @@ extern "C" __global__ void __raygen__rg() {
                     }
                     acc.transmittance *= (1.-resp);
                 }
-                min_dist = chit.thit; // same as fmaxf(min_dist, chit.thit);
-                // last_hit = chit.id; -> skip repeating hit
+                min_dist = __uint_as_float(chit.thit); // same as fmaxf(min_dist, chit.thit);
             }
         }
-        if(hits[chunk_size-1].thit == FLT_MAX) break; // buffer is not full->finish
+        if(hits[15].thit == uint_flt_max) break; // buffer is not full->finish
     }
     if(!params.compute_grad){
         params.radiance[id] = acc.radiance;
@@ -125,63 +111,52 @@ extern "C" __global__ void __raygen__rg() {
     }
 }
 
-extern "C" __global__ void __anyhit__fwd() {
+#define compareAndSwapHitPayloadValue(g_id, g_thit, s_id, s_thit)\
+    {\
+        const float thit = __uint_as_float(g_thit());\
+        if (last_thit < thit) {\
+            s_thit(__float_as_uint(last_thit));\
+            s_id(last_id);\
+            last_thit = thit;\
+            last_id = g_id();\
+        }\
+    }
 
-    //atomicAdd(params.num_its,1ull);
+extern "C" __global__ void __anyhit__fwd() {
 
     optixSetPayloadTypes(OPTIX_PAYLOAD_TYPE_ID_0);
 
-    unsigned int p_hitq[2];
-    p_hitq[0] = optixGetPayload_4();
-    p_hitq[1] = optixGetPayload_5();
-    Hit* hitq;
-    memcpy(&hitq, p_hitq, sizeof(p_hitq));
+    unsigned int last_id = optixGetPrimitiveIndex();
+    float last_thit = optixGetRayTmax();
 
-    const unsigned int hit_id = optixGetPrimitiveIndex()/triagPerParticle;
+    if (last_thit < __uint_as_float(optixGetPayload_31())) {
 
-    Hit hit;
-    hit.id = hit_id;
-#if SAMPLE_BASED_ORDER
-    float _resp,_thit; 
-    if(!compute_response(optixGetWorldRayOrigin(),
-        optixGetWorldRayDirection(),
-        params.gs_xyz[hit_id],
-        params.gs_opacity[hit_id],
-        construct_inv_RS(params.gs_rotation[hit_id],params.gs_scaling[hit_id]),
-        _resp,_thit)){
-        optixIgnoreIntersection();
-        return;
-    }
-    hit.thit = fmaxf(_thit,optixGetRayTmax()); // -> skip repeating hit
-#else
-    float _thit = optixGetRayTmax();
-    hit.thit = _thit;
-#endif
-    
-    if(hit.thit < hitq[chunk_size-1].thit)
-    {
-#pragma unroll
-        for(int i = 0; i < chunk_size; ++i){
-            Hit hitH = hitq[i];
-            if(hit.thit < hitH.thit){
-                hitq[i] = hit;
-                hit = hitH;
-            }
-        }
+        compareAndSwapHitPayloadValue(optixGetPayload_0,  optixGetPayload_1, optixSetPayload_0,  optixSetPayload_1);
+        compareAndSwapHitPayloadValue(optixGetPayload_2,  optixGetPayload_3, optixSetPayload_2,  optixSetPayload_3);
+        compareAndSwapHitPayloadValue(optixGetPayload_4,  optixGetPayload_5, optixSetPayload_4,  optixSetPayload_5);
+        compareAndSwapHitPayloadValue(optixGetPayload_6,  optixGetPayload_7, optixSetPayload_6,  optixSetPayload_7);
+        compareAndSwapHitPayloadValue(optixGetPayload_8,  optixGetPayload_9, optixSetPayload_8,  optixSetPayload_9);
+        compareAndSwapHitPayloadValue(optixGetPayload_10, optixGetPayload_11, optixSetPayload_10, optixSetPayload_11);
+        compareAndSwapHitPayloadValue(optixGetPayload_12, optixGetPayload_13, optixSetPayload_12, optixSetPayload_13);
+        compareAndSwapHitPayloadValue(optixGetPayload_14, optixGetPayload_15, optixSetPayload_14, optixSetPayload_15);
+        compareAndSwapHitPayloadValue(optixGetPayload_16, optixGetPayload_17, optixSetPayload_16, optixSetPayload_17);
+        compareAndSwapHitPayloadValue(optixGetPayload_18, optixGetPayload_19, optixSetPayload_18, optixSetPayload_19);
+        compareAndSwapHitPayloadValue(optixGetPayload_20, optixGetPayload_21, optixSetPayload_20, optixSetPayload_21);
+        compareAndSwapHitPayloadValue(optixGetPayload_22, optixGetPayload_23, optixSetPayload_22, optixSetPayload_23);
+        compareAndSwapHitPayloadValue(optixGetPayload_24, optixGetPayload_25, optixSetPayload_24, optixSetPayload_25);
+        compareAndSwapHitPayloadValue(optixGetPayload_26, optixGetPayload_27, optixSetPayload_26, optixSetPayload_27);
+        compareAndSwapHitPayloadValue(optixGetPayload_28, optixGetPayload_29, optixSetPayload_28, optixSetPayload_29);
+        compareAndSwapHitPayloadValue(optixGetPayload_30, optixGetPayload_31, optixSetPayload_30, optixSetPayload_31);
 
-#if !ENSURE_CORRECT_ORDER
-        if(_thit < hitq[chunk_size-1].thit)
+        // ignore all inserted hits, expect if the last one
+        if (__uint_as_float(optixGetPayload_31()) > optixGetRayTmax()) {
             optixIgnoreIntersection();
-#endif
+        }
     }
-#if ENSURE_CORRECT_ORDER
-    optixIgnoreIntersection();
-#endif
 }
+
 
 extern "C" __global__ void __anyhit__bwd() {
 
-
     optixSetPayloadTypes(OPTIX_PAYLOAD_TYPE_ID_1);
-
 }

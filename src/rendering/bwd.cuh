@@ -219,8 +219,8 @@ __device__ __forceinline__ void add_grad_at(
     float dg2 = max(eps,dot(dg,dg));
     const float3 dcsamp_dt = ray_direction;
     const float dresp_dt = dot(dresp_dxg,dxg_dcsamp*dcsamp_dt);
-    const float3 dt_dog = dg/dg2;//^T
-    const float3 dt_ddg = og/dg2 - 2.f*dot(og,dg)/max(dg2*dg2,eps) * dg;//^T
+    const float3 dt_dog = {};// dg/dg2;//^T
+    const float3 dt_ddg = {};// og/dg2 - 2.f*dot(og,dg)/max(dg2*dg2,eps) * dg;//^T
     const float3 dresp_dog = dresp_dt*dt_dog;//^T
     const float3 dresp_ddg = dresp_dt*dt_ddg;//^T
 

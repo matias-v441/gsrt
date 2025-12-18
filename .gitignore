@@ -158,3 +158,4 @@ _*
 *.json
 *.ptx
 ptx_embedded.cpp
+*.out

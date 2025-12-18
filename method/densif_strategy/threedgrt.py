@@ -147,6 +147,8 @@ class Densif3DGRT(BaseDensifStrategy):
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.model.scaling, dim=1).values > self.percent_dense*scene_extent)
+        if torch.sum(selected_pts_mask) + self.model.num_gaussians > 1.7e6:
+            return
         #print(f'{self.iteration} SPLIT {torch.sum(selected_pts_mask)} scene_extent={scene_extent} grad_threshold={grad_threshold} percent_dense={self.percent_dense}')
         self.densif_stats["split"] += torch.sum(selected_pts_mask)
         stds = self.model.scaling[selected_pts_mask].repeat(N,1)
@@ -173,6 +175,8 @@ class Densif3DGRT(BaseDensifStrategy):
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.model.scaling, dim=1).values <= self.percent_dense*scene_extent)
+        if torch.sum(selected_pts_mask) + self.model.num_gaussians > 1.7e6:
+            return
         #print(f'{self.iteration} CLONE {torch.sum(selected_pts_mask)} scene_extent={scene_extent} grad_threshold={grad_threshold} percent_dense={self.percent_dense}') 
         self.densif_stats["cloned"] += torch.sum(selected_pts_mask)
         new_xyz = self.model._xyz[selected_pts_mask]
@@ -238,7 +242,7 @@ class Densif3DGRT(BaseDensifStrategy):
             self.add_densification_stats(ray_origins[0])
 
             if t_step > self.densify_from_iter and (t_step-self.densify_from_iter) % self.densification_interval == 0:
-                size_threshold = 20 if t_step > self.opacity_reset_interval else None
+                #size_threshold = 20 if t_step > self.opacity_reset_interval else None
                 #size_threshold = 20 if step > 500 else None
                 self.densify_and_prune()
 
