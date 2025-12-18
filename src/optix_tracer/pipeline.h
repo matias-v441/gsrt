@@ -34,6 +34,8 @@ class TraceRaysPipeline {
         swap(first.device, second.device);
         swap(first.module, second.module);
         swap(first.sbt, second.sbt);
+        swap(first.rg_fwd, second.rg_fwd);
+        swap(first.rg_bwd, second.rg_bwd);
         swap(first.pipeline, second.pipeline);
         swap(first.d_param, second.d_param);
         swap(first.stream, second.stream);
@@ -54,11 +56,14 @@ class TraceRaysPipeline {
     // Local fields used for this pipeline
     OptixModule module = nullptr;
     OptixShaderBindingTable sbt = {};
+    CUdeviceptr rg_fwd = {};
+    CUdeviceptr rg_bwd = {};
     OptixPipeline pipeline = nullptr;
     CUdeviceptr d_param = 0;
     CUstream stream = nullptr;
 
     OptixProgramGroup raygen_prog_group = nullptr;
+    OptixProgramGroup raygen_bwd_prog_group = nullptr;
     OptixProgramGroup miss_prog_group = nullptr;
     OptixProgramGroup hitgroup_prog_group = nullptr;
     OptixProgramGroup bwd_hitgroup_prog_group = nullptr;

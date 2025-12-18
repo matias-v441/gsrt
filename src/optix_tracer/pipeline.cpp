@@ -167,6 +167,21 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
             log,
             &sizeof_log,
             &raygen_prog_group));
+            
+#ifdef RG_BWD
+        OptixProgramGroupDesc raygen_bwd_prog_group_desc = {};
+        raygen_bwd_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
+        raygen_bwd_prog_group_desc.raygen.module = module;
+        raygen_bwd_prog_group_desc.raygen.entryFunctionName = "__raygen__bwd";
+        OPTIX_CHECK_LOG(optixProgramGroupCreate(
+            context,
+            &raygen_bwd_prog_group_desc,
+            1,  // num program groups
+            &empty_program_group_options,
+            log,
+            &sizeof_log,
+            &raygen_bwd_prog_group));
+#endif
 
         OptixProgramGroupDesc miss_prog_group_desc = {};
         miss_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
@@ -283,6 +298,17 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
             &rg_sbt,
             raygen_record_size,
             cudaMemcpyHostToDevice));
+        rg_fwd = raygen_record;
+
+#ifdef RG_BWD
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&rg_bwd), raygen_record_size));
+        OPTIX_CHECK(optixSbtRecordPackHeader(raygen_bwd_prog_group, &rg_sbt));
+        CUDA_CHECK(cudaMemcpy(
+            reinterpret_cast<void *>(rg_bwd),
+            &rg_sbt,
+            raygen_record_size,
+            cudaMemcpyHostToDevice));
+#endif
 
         CUdeviceptr miss_record;
         size_t miss_record_size = sizeof(MissSbtRecord);
@@ -341,6 +367,8 @@ TraceRaysPipeline::TraceRaysPipeline(TraceRaysPipeline &&other) noexcept
       bwd_hitgroup_prog_group(std::exchange(other.bwd_hitgroup_prog_group, nullptr)),
       module(std::exchange(other.module, nullptr)),
       sbt(std::exchange(other.sbt, {})),
+      rg_fwd(std::exchange(other.rg_fwd, {})),
+      rg_bwd(std::exchange(other.rg_bwd, {})),
       stream(std::exchange(other.stream, nullptr)),
       d_param(std::exchange(other.d_param, 0)) {}
       
@@ -354,8 +382,13 @@ TraceRaysPipeline::~TraceRaysPipeline(){
     CUDA_CHECK(cudaSetDevice(device));
     if (d_param != 0)
         CUDA_CHECK(cudaFree(reinterpret_cast<void *>(std::exchange(d_param, 0))));
-    if (sbt.raygenRecord != 0)
-        CUDA_CHECK(cudaFree(reinterpret_cast<void *>(std::exchange(sbt.raygenRecord, 0))));
+    //if (sbt.raygenRecord != 0)
+    //    CUDA_CHECK(cudaFree(reinterpret_cast<void *>(std::exchange(sbt.raygenRecord, 0))));
+    if (rg_fwd != 0)
+        CUDA_CHECK(cudaFree(reinterpret_cast<void *>(std::exchange(rg_fwd, 0))));
+    if (rg_bwd != 0)
+        CUDA_CHECK(cudaFree(reinterpret_cast<void *>(std::exchange(rg_bwd, 0))));
+    //------------
     if (sbt.missRecordBase != 0)
         CUDA_CHECK(cudaFree(reinterpret_cast<void *>(std::exchange(sbt.missRecordBase, 0))));
     if (sbt.hitgroupRecordBase != 0)
@@ -371,6 +404,8 @@ TraceRaysPipeline::~TraceRaysPipeline(){
         OPTIX_CHECK(optixPipelineDestroy(std::exchange(pipeline, nullptr)));
     if (raygen_prog_group != nullptr)
         OPTIX_CHECK(optixProgramGroupDestroy(std::exchange(raygen_prog_group, nullptr)));
+    if (raygen_bwd_prog_group != nullptr)
+        OPTIX_CHECK(optixProgramGroupDestroy(std::exchange(raygen_bwd_prog_group, nullptr)));
     if (miss_prog_group != nullptr)
         OPTIX_CHECK(optixProgramGroupDestroy(std::exchange(miss_prog_group, nullptr)));
     if (hitgroup_prog_group != nullptr)
@@ -437,6 +472,11 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         params.radiance = bp_in.radiance;
         params.transmittance = bp_in.transmittance;
         params.distance = bp_in.distance;
+    }
+    if(params.compute_grad && rg_bwd != 0){
+        sbt.raygenRecord = rg_bwd;
+    }else{
+        sbt.raygenRecord = rg_fwd;
     }
     CUDA_CHECK(cudaMemcpy(
         reinterpret_cast<void *>(d_param),
