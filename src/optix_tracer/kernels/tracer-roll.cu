@@ -45,7 +45,7 @@ __device__ __forceinline__ void hitq_pop(H* hitq, unsigned int& hitq_size){
 
 constexpr int triagPerParticle = 20;
 
-constexpr unsigned int chunk_size = 512;
+constexpr unsigned int chunk_size = 1024;//512;
 
 constexpr float Tmin = 0.001;
 
@@ -169,7 +169,7 @@ extern "C" __global__ void __raygen__rg() {
                 params.gs_sh,params.sh_deg,params.grad_sh,
                 params.white_background,
                 params.dL_dC[id],
-                params.grad_rotation,params.grad_scale,params.grad_xyz,params.grad_opacity,
+                params.grad_rotation,params.grad_scale,params.grad_xyz,params.grad_xyz_2d,params.grad_opacity,
                 acc_bwd,rad,acc_full,chit.id,
                 ray_origin+ray_direction*chit.thit,
                 chit.resp, ray_origin, ray_direction, clamped);
@@ -286,7 +286,7 @@ extern "C" __global__ void __anyhit__bwd() {
                 params.gs_sh,params.sh_deg,params.grad_sh,
                 params.white_background,
                 params.dL_dC[id],
-                params.grad_rotation,params.grad_scale,params.grad_xyz,params.grad_opacity,
+                params.grad_rotation,params.grad_scale,params.grad_xyz,params.grad_xyz_2d,params.grad_opacity,
                 acc,rad,acc_full,chit.id,
                 origin+direction*chit.thit,
                 chit.resp,origin,direction,clamped);

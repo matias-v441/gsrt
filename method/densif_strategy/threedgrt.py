@@ -68,6 +68,8 @@ class Densif3DGRT(BaseDensifStrategy):
         self.model._opacity = optimizable_tensors["opacity"]
         self.model._scaling = optimizable_tensors["scaling"]
         self.model._rotation = optimizable_tensors["rotation"]
+        self.model.xyz_2d = self.model.xyz_2d[valid_points_mask]
+        self.model.xyz_2d.requires_grad_()
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -114,6 +116,7 @@ class Densif3DGRT(BaseDensifStrategy):
         self.model._opacity = optimizable_tensors["opacity"]
         self.model._scaling = optimizable_tensors["scaling"]
         self.model._rotation = optimizable_tensors["rotation"]
+        self.model.xyz_2d = torch.zeros_like(self.model._xyz, requires_grad=True).cuda()
 
         self.xyz_gradient_accum = torch.zeros((self.model.num_gaussians,1), device="cuda")
         self.denom = torch.zeros((self.model.num_gaussians,1), device="cuda")
@@ -190,8 +193,13 @@ class Densif3DGRT(BaseDensifStrategy):
 
         self._cleanup_memory()
 
+    def get_wandb_log(self):
+        import wandb
+        grads = self.xyz_gradient_accum / self.denom
+        grads[grads.isnan()] = 0.0
+        return {"densif_crit": wandb.Histogram(grads.cpu()*100,num_bins=100), **self.densif_stats}
 
-    def densify_and_prune(self):
+    def clone_and_split(self):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
@@ -232,11 +240,15 @@ class Densif3DGRT(BaseDensifStrategy):
         self.xyz_gradient_accum[mask] += pos_grad_norm
         self.denom[mask] += 1
 
+    # def add_densification_stats(self, origin):
+    #     mask = (self.model.xyz_2d.grad != 0).max(dim=1).values
+    #     #dist = torch.norm(self.model.xyz[mask] - origin, dim=1, keepdim=True)
+    #     pos_grad_norm = torch.norm(self.model.xyz_2d.grad[mask],dim=1,keepdim=True)
+    #     self.xyz_gradient_accum[mask] += pos_grad_norm
+    #     self.denom[mask] += 1
+
     @torch.no_grad()
     def densify(self, t_step:int, *, ray_origins: torch.Tensor):
-        # Implement the 3D-GRT densification strategy here
-        self.densif_stats["total"] = self.model.num_gaussians
-        # Densification
         if t_step < self.densify_until_iter:
 
             self.add_densification_stats(ray_origins[0])
@@ -244,7 +256,7 @@ class Densif3DGRT(BaseDensifStrategy):
             if t_step > self.densify_from_iter and (t_step-self.densify_from_iter) % self.densification_interval == 0:
                 #size_threshold = 20 if t_step > self.opacity_reset_interval else None
                 #size_threshold = 20 if step > 500 else None
-                self.densify_and_prune()
+                self.clone_and_split()
 
             if t_step > self.densify_from_iter and (t_step-self.densify_from_iter) % self.prune_interval == 0:
                 self.prune_opacity()

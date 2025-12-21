@@ -82,43 +82,30 @@ class Training:
 
         self.densif_strategy.densify(self.model.iteration, ray_origins=rays.origins)
 
+        with torch.no_grad():
+            if self.cfg.save_results and\
+                (self.model.iteration >= self.cfg.save_start_iter\
+                    and self.model.iteration % self.cfg.save_interval == 0):
+                print(f'saving checkpoint_{self.model.iteration}')
+                self.model.save(f'{self.cfg.results_dir}/checkpoint_{self.model.iteration}.pt')
+
+            # Log metrics to wandb if enabled
+            psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
+            if self.wandb_run is not None:
+                self.wandb_run.log({
+                    "loss": loss.item(),
+                    "psnr": psnr.item(),
+                    "ssim": ssim_value.item(),
+                    "l1_loss": l1.item(),
+                    "num_gaussians": self.model.num_gaussians,
+                    "learning_rate": self.model.optimizer.param_groups[0]['lr'],
+                    "iteration": self.model.iteration,
+                    **self.densif_strategy.get_wandb_log(),
+                    **self.model.get_wandb_log()
+                }, step=self.model.iteration)
+
         # Optimizer step
         self.model.optimizer.step()
         self.model.optimizer.zero_grad()
-
-        if self.cfg.save_results and\
-              (self.model.iteration >= self.cfg.save_start_iter\
-                and self.model.iteration % self.cfg.save_interval == 0):
-            print(f'saving checkpoint_{self.model.iteration}')
-            self.model.save(f'{self.cfg.results_dir}/checkpoint_{self.model.iteration}.pt')
-
-        # Log metrics to wandb if enabled
-        psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
-        if self.wandb_run is not None:
-            self.wandb_run.log({
-                "loss": loss.item(),
-                "psnr": psnr.item(),
-                "ssim": ssim_value.item(),
-                "l1_loss": l1.item(),
-                "num_gaussians": self.model.num_gaussians,
-                "learning_rate": self.model.optimizer.param_groups[0]['lr'],
-                "iteration": self.model.iteration
-            }, step=self.model.iteration)
-            # scales = model.get_scaling.detach().cpu().numpy()
-            # opacities = model.get_opacity.detach().cpu().numpy()
-            # wandb_log = {'loss:':metrics['loss'],
-            #             'clone':metrics["densif_stats"]["cloned"],
-            #             'prune':metrics["densif_stats"]["pruned"],
-            #             'split':metrics["densif_stats"]["split"],
-            #             'opacities': wandb.Histogram(opacities,num_bins=100),#np.histogram(opacities,1000)[0]),
-            #             'scales_max': wandb.Histogram(scales.max(axis=-1),num_bins=100),#np.histogram(scales.max(axis=-1),500)[0]),
-            #             'pos_grad_norm': wandb.Histogram(metrics["pos_grad_norm"],num_bins=100),
-            #             #'resp_grad': wandb.Histogram(metrics["resp_grad"],num_bins=100),
-            #             'N':metrics["densif_stats"]["total"]
-            #             }
-            # if (step >= 0 and step%300==0) and metrics["out_image"] is not None:# or step < 10:
-            #     wandb_log['image'] = wandb.Image(metrics['out_image']/np.max(metrics['out_image']))
-            # if cfg.use_wandb:
-            #     wandb.log(wandb_log)
         
         return {"loss": loss.item(), "image": image}

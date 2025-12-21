@@ -9,6 +9,8 @@
 
 using namespace gsrt::optix_tracer;
 
+//#define RG_BWD
+
 // These structs represent the data blocks of our SBT records
 template <typename T>
 struct SbtRecord {
@@ -459,6 +461,7 @@ void TraceRaysPipeline::trace_rays(const GaussiansAS *gaussians_structure,
         assert(tracing_params.bp_out.has_value());
         const auto& bp_out = tracing_params.bp_out.value();
         params.grad_xyz = bp_out.grad_xyz;
+        params.grad_xyz_2d = bp_out.grad_xyz_2d;
         params.grad_rotation = bp_out.grad_rotation;
         params.grad_scale = bp_out.grad_scale;
         params.grad_opacity = bp_out.grad_opacity;

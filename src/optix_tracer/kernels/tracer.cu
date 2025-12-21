@@ -106,7 +106,7 @@ extern "C" __global__ void __raygen__rg() {
                             params.gs_sh,params.sh_deg,params.grad_sh,
                             params.white_background,
                             params.dL_dC[id],
-                            params.grad_rotation,params.grad_scale,params.grad_xyz,params.grad_opacity,
+                            params.grad_rotation,params.grad_scale,params.grad_xyz,params.grad_xyz_2d,params.grad_opacity,
                             acc,rad,acc_full,chit.id,
                             ray_origin+ray_direction*thit,
                             resp, ray_origin, ray_direction, clamped);

@@ -41,13 +41,21 @@ class GSRTMethod(Method):
         self.cfg = config_overrides
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
+        def fit_distortion(x,name):
+            if x is not None and name == "distortion_parameters":
+                x = x[:,None,None,:]
+            return torch.from_numpy(x).contiguous().cuda()
+        if self.train_dataset:
+            self.train_cameras_th = self.train_dataset['cameras'].apply(fit_distortion)
+        if self.test_dataset:
+            self.test_cameras_th = self.test_dataset['cameras'].apply(fit_distortion)
         if checkpoint is not None:
             self.model = load_checkpoint(self.cfg)
         else:
             self.model = initialize(self.cfg, self.train_dataset)
         if train_dataset is not None:
             self.training = Training(self.cfg, self.model)
-            self.viewpoint_ids = torch.arange(len(self.train_dataset['cameras']))
+            self.viewpoint_ids = None
 
     def transform_gt_image(self, gt_image: torch.Tensor) -> torch.Tensor:
         gt_image = gt_image.float() / 255
@@ -60,33 +68,16 @@ class GSRTMethod(Method):
         return gt_image.float().reshape(-1, 3).cuda()
 
     def train_iteration(self, step: int) -> Dict[str, float]:
-
-        # if not self._viewpoint_stack:
-        #     loadCam.was_called = False  # type: ignore
-        #     self._viewpoint_stack = self.scene.getTrainCameras().copy()
-        #     if any(not getattr(cam, "_patched", False) for cam in self._viewpoint_stack):
-        #         raise RuntimeError("could not patch loadCam!")
-        # viewpoint_cam = self._viewpoint_stack.pop(randint(0, len(self._viewpoint_stack) - 1))
-        random.seed(step)
-        train_cameras = self.train_dataset['cameras']
-        # batch_id = step%len(train_cameras)
-        # if batch_id == 0:
-        #     self.viewpoint_ids = torch.randperm(len(train_cameras))
-        # vp_id = self.viewpoint_ids[batch_id] 
-        vp_id = self.viewpoint_ids[randint(0, self.viewpoint_ids.shape[0] - 1)]
-        #cameras_th = train_cameras.apply(lambda x, _: torch.from_numpy(x).contiguous().cuda())
-        #camera_th = cameras_th.__getitem__(vp_id)
-        def fit_distortion(x,name):
-            if x is not None and name == "distortion_parameters":
-                x = x[:,None,None,:]
-            return torch.from_numpy(x).contiguous().cuda()
-        cameras_th = train_cameras.apply(fit_distortion)
-        camera_th = cameras_th.__getitem__(vp_id)
+        iter = self.training.start_iter+step
+        random.seed(iter)
+        batch_id = (iter-1)%len(self.train_cameras_th)
+        if batch_id == 0:
+            self.viewpoint_ids = torch.randperm(len(self.train_cameras_th))
+        vp_id = self.viewpoint_ids[batch_id] 
+        camera_th = self.train_cameras_th.__getitem__(vp_id)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
 
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
-        # ray_origins = torch.from_numpy(ray_origins).contiguous().cuda()
-        # ray_directions = torch.from_numpy(ray_directions).contiguous().cuda()
         res_x, res_y = camera_th.image_sizes
         ray_origins = ray_origins.float().squeeze()
         ray_directions = ray_directions.float().squeeze()
@@ -133,13 +124,8 @@ class GSRTMethod(Method):
 
     
     def gradcheck(self, vp_id=0) -> bool:
-        test_cameras = self.test_dataset['cameras']
-        def fit_distortion(x,name):
-            if x is not None and name == "distortion_parameters":
-                x = x[:,None,None,:]
-            return torch.from_numpy(x).contiguous().cuda()
-        cameras_th = test_cameras.apply(fit_distortion)
-        camera_th = cameras_th.__getitem__(vp_id)
+        
+        camera_th = self.test_cameras_th.__getitem__(vp_id)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
 
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])

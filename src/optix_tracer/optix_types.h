@@ -33,6 +33,7 @@ struct Params {
     bool white_background;
 
     float3* grad_xyz;
+    float3* grad_xyz_2d;
     float4* grad_rotation;
     float3* grad_scale;
     float* grad_opacity;

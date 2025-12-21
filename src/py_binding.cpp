@@ -199,11 +199,13 @@ struct PyTracer {
         gsrt::BPOutput bp_out{};
         long N = xyz.numel() / 3;
         torch::Tensor grad_xyz = torch::zeros({N,3}, torch::device(device).dtype(torch::kFloat32));
+        torch::Tensor grad_xyz_2d = torch::zeros({N,3}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor grad_opacity = torch::zeros({N}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor grad_sh = torch::zeros({N,16,3}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor grad_scale = torch::zeros({N,3}, torch::device(device).dtype(torch::kFloat32));
         torch::Tensor grad_rotation = torch::zeros({N,4}, torch::device(device).dtype(torch::kFloat32));
         assert(grad_xyz.is_contiguous());
+        assert(grad_xyz_2d.is_contiguous());
         assert(grad_opacity.is_contiguous());
         assert(grad_sh.is_contiguous());
         assert(grad_scale.is_contiguous());
@@ -211,6 +213,7 @@ struct PyTracer {
         //grad_color = torch::zeros({(long)particles.numgs,3}, torch::device(device).dtype(torch::kFloat32));
         //grad_invRS = torch::zeros({(long)particles.numgs,3,3}, torch::device(device).dtype(torch::kFloat32));
         bp_out.grad_xyz = reinterpret_cast<float3 *>(grad_xyz.data_ptr());
+        bp_out.grad_xyz_2d = reinterpret_cast<float3 *>(grad_xyz_2d.data_ptr());
         bp_out.grad_opacity = reinterpret_cast<float*>(grad_opacity.data_ptr());
         bp_out.grad_sh = reinterpret_cast<float3*>(grad_sh.data_ptr());
         bp_out.grad_scale = reinterpret_cast<float3*>(grad_scale.data_ptr());
@@ -232,6 +235,7 @@ struct PyTracer {
         return py::dict("time_ms"_a = ms_frame,
                         "num_its_bwd"_a = *reinterpret_cast<unsigned long*>(num_its_bwd.cpu().data_ptr()),
                         "grad_xyz"_a = grad_xyz,
+                        "grad_xyz_2d"_a = grad_xyz_2d,
                         "grad_opacity"_a = grad_opacity,
                         "grad_sh"_a = grad_sh,
                         "grad_scale"_a = grad_scale,

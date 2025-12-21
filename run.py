@@ -83,8 +83,9 @@ def main(cfg: DictConfig):
     if cfg.train:
         import time
         start_time = time.time()
-        with tqdm(total=cfg.parameters.n_iterations) as pbar:
-            for step in range(cfg.parameters.n_iterations):
+        num_steps = cfg.parameters.n_iterations - model.model.iteration
+        with tqdm(total=num_steps) as pbar:
+            for step in range(num_steps):
                 model.train_iteration(step)
                 pbar.update()
 
@@ -104,7 +105,7 @@ def main(cfg: DictConfig):
             print(f"Average SSIM: {tot_ssim/num_steps:.4f}, PSNR: {tot_psnr/num_steps:.4f}, LPIPS: {tot_lpips/num_steps:.4f}")
             with open(os.path.join(cfg.results_dir, "eval.json"), "wb") as f:
                 f.write(str.encode(
-                    f'{{"ssim": {tot_ssim/num_steps:.4f}, "psnr": {tot_psnr/num_steps:.4f}, "lpips": {tot_lpips/num_steps:.4f}}}'
+                    f'{{"ssim": {tot_ssim/num_steps:.4f}, "psnr": {tot_psnr/num_steps:.4f}, "lpips": {tot_lpips/num_steps:.4f}, "time_min": {(end_time - start_time)/60:.2f}}}'
                 ))
 
     if cfg.use_viewer:

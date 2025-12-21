@@ -43,7 +43,8 @@ __device__ bool compute_response_naive(
     //tmax = dot(og,dg)/(eps+dot(dg,dg));
     float3 c_samp = o+tmax*d;
     float3 v = inv_RS*(c_samp-mu);
-    float resp = exp(-.5f*dot(v,v));
+    //float resp = exp(-.5f*dot(v,v));
+    float resp = exp(-.5f*tmax);
     if(resp < min_kernel_density) return false;
     alpha = min(max_alpha,opacity*resp);
 
@@ -63,10 +64,11 @@ __device__ bool compute_response(
 	Matrix3x3 RT = construct_rotation(rotation).transpose();
 	const float3 iscl = make_float3(1/scaling.x,1/scaling.y,1/scaling.z);
 	const float3 og = iscl*(RT*(mu-o));
-	const float3 dg = safe_normalize(iscl*(RT*d));
+	const float3 dg_unorm = iscl*(RT*d);
+	const float3 dg = safe_normalize(dg_unorm);
 	const float3 dg_x_og = cross(dg,og);
-	tmax = dot(dg_x_og,dg_x_og);
-    float G = expf(-.5f*tmax);
+	tmax = dot(og,dg_unorm)/max(eps,dot(dg_unorm,dg_unorm));
+    float G = expf(-.5f*dot(dg_x_og,dg_x_og));
     if(G < min_kernel_density) return false;
     alpha = min(max_alpha, opacity*G);
     return (alpha > min_alpha) && (G > min_kernel_density);

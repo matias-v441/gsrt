@@ -130,6 +130,8 @@ class GaussianModel(nn.Module):
         self._tracer = GaussiansTracer()
         self.as_params = {"type": cfg.tracer_type}
 
+        self.xyz_2d = torch.zeros_like(xyz, requires_grad=True).cuda()
+
     @staticmethod
     def from_dataset(cfg) -> 'GaussianModel':
         ...
@@ -220,7 +222,8 @@ class GaussianModel(nn.Module):
         return torch.cat((features_dc, features_rest), dim=1) 
 
     def forward(self, rays: Rays):
-        return TraceFunction.apply(self.opacity, self.xyz, self.scaling, self.rotation, self.features,
+        self.xyz_2d.grad = None
+        return TraceFunction.apply(self.opacity, self.xyz, self.scaling, self.rotation, self.features, self.xyz_2d,
                 self._tracer, self.active_sh_degree, rays, self._white_background, self.training, self.as_params)
 
     def gradcheck(self, rays: Rays, gt_image, fn_loss, n_points=100, pad_x = None, pad_y = None, **kwargs) -> bool:
@@ -273,6 +276,19 @@ class GaussianModel(nn.Module):
         for inp in inputs:
             inp.requires_grad = True
         return gradcheck(func, inputs, **kwargs)
+
+    def get_wandb_log(self):
+        import wandb
+        pos_grad_norm = torch.norm(self._xyz.grad,dim=1) if self._xyz.grad is not None else torch.zeros(self._xyz.shape[0])
+        pos_grad_2d_norm = torch.norm(self.xyz_2d.grad,dim=1) if self.xyz_2d.grad is not None else torch.zeros(self._xyz.shape[0])
+        return {
+            'opacities': wandb.Histogram(self.opacity.detach().cpu().numpy(),num_bins=100),
+            'scales_max': wandb.Histogram(self.scaling.detach().cpu().numpy().max(axis=-1),num_bins=100),
+            'pos_grad_norm': wandb.Histogram(pos_grad_norm.cpu(),num_bins=100),
+            'pos_grad_2d_norm': wandb.Histogram(pos_grad_2d_norm.cpu(),num_bins=100),
+            'pos_grad_norm_max': pos_grad_norm.cpu().max(),
+            'pos_grad_2d_norm_max': pos_grad_2d_norm.cpu().max(),
+            }
 
 GaussianModel.from_dataset = staticmethod(initialize)
 GaussianModel.from_checkpoint = staticmethod(load_checkpoint)

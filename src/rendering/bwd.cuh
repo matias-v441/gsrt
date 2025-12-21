@@ -162,8 +162,14 @@ __device__ __forceinline__ void add_grad_at_naive(
     const float opacity = gs_opacity[chit_id];
 
     float3 background = white_background? make_float3(1.f) : make_float3(0.f);
-    const float3 dC_dresp = acc.transmittance*rad - (acc_full.radiance - acc.radiance)/max(eps,1.f-resp)
-                            - background*acc_full.transmittance/max(eps,1.f-resp);
+    // const float3 dC_dresp = acc.transmittance*rad - (acc_full.radiance - acc.radiance)/max(eps,1.f-resp)
+    //                         - background*acc_full.transmittance/max(eps,1.f-resp);
+    const float Tnext = (1.f-resp)*acc.transmittance;
+    const float Tmin = 0.001;
+    const float3 C_b = fmaxf(make_float3(0),
+        Tnext > Tmin? (acc_full.radiance-acc.radiance)/Tnext : make_float3(0) 
+        );
+    const float3 dC_dresp = acc.transmittance*(rad-C_b);
 
     const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
 
@@ -179,8 +185,8 @@ __device__ __forceinline__ void add_grad_at_naive(
     float dg2 = max(eps,dot(dg,dg));
     const float3 dcsamp_dt = ray_direction;
     const float dresp_dt = dot(dresp_dxg,dxg_dcsamp*dcsamp_dt);
-    const float3 dt_dog = {};// dg/dg2;//^T
-    const float3 dt_ddg = {};// og/dg2 - 2.f*dot(og,dg)/max(dg2*dg2,eps) * dg;//^T
+    const float3 dt_dog = dg/dg2;//^T
+    const float3 dt_ddg = og/dg2 - 2.f*dot(og,dg)/max(dg2*dg2,eps) * dg;//^T
     const float3 dresp_dog = dresp_dt*dt_dog;//^T
     const float3 dresp_ddg = dresp_dt*dt_ddg;//^T
 
@@ -298,7 +304,7 @@ __device__ __forceinline__ void add_grad_at(
     const float3* shs, int sh_deg, float3* grad_sh,
     bool white_background,
     float3 dL_dC,
-    float4* grad_rotation, float3* grad_scaling, float3* grad_xyz, float* grad_opacity,
+    float4* grad_rotation, float3* grad_scaling, float3* grad_xyz, float3* grad_xyz_2d, float* grad_opacity,
     const Acc& acc, const float3& rad, const Acc& acc_full,
     int chit_id, const float3& csamp,
     const float resp, 
@@ -324,8 +330,7 @@ __device__ __forceinline__ void add_grad_at(
     const float3 dg_unorm = iscl*(RT*ray_direction);
     const float3 dg = safe_normalize(dg_unorm);
     const float3 dg_x_og = cross(dg,og);
-    const float tmax = dot(dg_x_og,dg_x_og);
-    const float G = expf(-0.5f*tmax);
+    const float G = expf(-0.5f*dot(dg_x_og,dg_x_og));
 
     const float Tnext = (1.f-resp)*acc.transmittance;
     const float Tmin = 0.001;
@@ -416,6 +421,10 @@ __device__ __forceinline__ void add_grad_at(
     compute_radiance_bwd_at(shs,sh_deg,grad_sh,chit_id,ray_origin,ray_direction,dL_dcolor,clamped);
 
     atomicAdd_float3(grad_xyz[chit_id],dL_dmu);
+
+    const float3 d = safe_normalize(ray_direction);
+    atomicAdd_float3(grad_xyz_2d[chit_id],(dL_dmu-d*dot(dL_dmu,d)));
+    //atomicAdd_float3(grad_xyz_2d[chit_id],dL_dmu-d*dot(dL_dmu,dg));
 
     atomicAdd_float3(grad_scaling[chit_id],dL_ds);
 
