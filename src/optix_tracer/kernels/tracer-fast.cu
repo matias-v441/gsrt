@@ -198,10 +198,11 @@ extern "C" __global__ void __raygen__bwd() {
     {\
         const float thit = __uint_as_float(g_thit());\
         if (last_thit < thit) {\
+            unsigned int id = g_id();\
             s_thit(__float_as_uint(last_thit));\
             s_id(last_id);\
             last_thit = thit;\
-            last_id = g_id();\
+            last_id = id;\
         }\
     }
 

@@ -23,6 +23,7 @@ __global__ void _construct_icosahedra(const int numgs, const float3* xyz, const 
 
         const util::Matrix3x3 R = util::geom::construct_rotation(rotation[i]);
 
+        //constexpr float alpha_min = 1/255.f;
         constexpr float alpha_min = 0.0113f;
         float adaptive_scale = sqrtf(-2.*logf(fminf(alpha_min / opacity[i], 0.97f)));
         //float adaptive_scale = sqrtf(2.*logf(opacity[i]/alpha_min));

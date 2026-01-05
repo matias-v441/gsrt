@@ -22,7 +22,8 @@ GaussiansAS::GaussiansAS(GaussiansAS &&other) noexcept
       d_vertices(std::exchange(other.d_vertices, 0)),
       d_triangles(std::exchange(other.d_triangles, 0)),
       d_normals(std::exchange(other.d_normals, nullptr)),
-      d_gaussians(std::exchange(other.d_gaussians, {})) {}
+      d_gaussians(std::exchange(other.d_gaussians, {})),
+      _gas_size(std::exchange(other._gas_size, {})){}
 
 void GaussiansAS::release() {
     bool device_set = false;
@@ -69,6 +70,8 @@ void GaussiansAS::build() {
     // enable compaction, etc
     OptixAccelBuildOptions accel_options = {};
     accel_options.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
+    //accel_options.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_BUILD;
+    //accel_options.buildFlags |= OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
     accel_options.operation = OPTIX_BUILD_OPERATION_BUILD;
 
     // Our build input is a simple list of non-indexed triangle vertices
@@ -98,7 +101,7 @@ void GaussiansAS::build() {
         reinterpret_cast<void **>(&d_temp_buffer_gas),
         gas_buffer_sizes.tempSizeInBytes));
 
-    //std::cout << "GAS size " << gas_buffer_sizes.outputSizeInBytes/1024.f/1024.f << " MiB" << std::endl;
+    _gas_size = gas_buffer_sizes.outputSizeInBytes;
 
     CUDA_CHECK(cudaMalloc(
         reinterpret_cast<void **>(&d_gas_output_buffer),

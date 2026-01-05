@@ -24,7 +24,10 @@ class Training:
         self.wandb_run = None
         if cfg.use_wandb:
             import wandb
-            self.wandb_run = wandb.init(project="gsrt", config=dict(cfg))
+            import os
+            train_dir = os.path.join(cfg.results_dir,"train")
+            os.makedirs(train_dir, exist_ok=True)
+            self.wandb_run = wandb.init(project="gsrt", config=dict(cfg), dir=train_dir)
             wandb.watch(self.model, log="all")
 
         self._register_cleanup_handlers()
@@ -83,11 +86,6 @@ class Training:
         self.densif_strategy.densify(self.model.iteration, ray_origins=rays.origins)
 
         with torch.no_grad():
-            if self.cfg.save_results and\
-                (self.model.iteration >= self.cfg.save_start_iter\
-                    and self.model.iteration % self.cfg.save_interval == 0):
-                print(f'saving checkpoint_{self.model.iteration}')
-                self.model.save(f'{self.cfg.results_dir}/checkpoint_{self.model.iteration}.pt')
 
             # Log metrics to wandb if enabled
             psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))

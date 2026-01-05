@@ -20,6 +20,13 @@ public:
             tracing_params);
     }
 
+    struct AS_Stats{
+        size_t gas_size;
+    };
+    AS_Stats as_stats(){
+        return {gaussians_structure.gas_size()};
+    }
+
 private:
     int8_t device;
     OptixDeviceContext context;

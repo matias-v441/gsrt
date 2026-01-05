@@ -422,8 +422,8 @@ __device__ __forceinline__ void add_grad_at(
 
     atomicAdd_float3(grad_xyz[chit_id],dL_dmu);
 
-    const float3 d = safe_normalize(ray_direction);
-    atomicAdd_float3(grad_xyz_2d[chit_id],(dL_dmu-d*dot(dL_dmu,d)));
+    //const float3 d = safe_normalize(ray_direction);
+    //atomicAdd_float3(grad_xyz_2d[chit_id],(dL_dmu-d*dot(dL_dmu,d)));
     //atomicAdd_float3(grad_xyz_2d[chit_id],dL_dmu-d*dot(dL_dmu,dg));
 
     atomicAdd_float3(grad_scaling[chit_id],dL_ds);

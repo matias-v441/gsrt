@@ -71,7 +71,7 @@ class GSRTMethod(Method):
         iter = self.training.start_iter+step
         random.seed(iter)
         batch_id = (iter-1)%len(self.train_cameras_th)
-        if batch_id == 0:
+        if batch_id == 0 or step == 0:
             self.viewpoint_ids = torch.randperm(len(self.train_cameras_th))
         vp_id = self.viewpoint_ids[batch_id] 
         camera_th = self.train_cameras_th.__getitem__(vp_id)
@@ -96,20 +96,21 @@ class GSRTMethod(Method):
 
         out = self.training.step(t_step=step, rays=rays, gt_image=gt_image)
 
-        image = out["image"]
-
-        psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
-        
-        return {"loss":out["loss"],"vp_id":vp_id,
+        with torch.no_grad():
+            image = out["image"].detach()
+            psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
+            metrics = {"loss":out["loss"],"vp_id":vp_id,
                 "out_image": image.detach().cpu().reshape(res_y,res_x,3).numpy(),
                 "densif_stats":self.training.densif_strategy.densif_stats,
                 "psnr":psnr}
+        return metrics
     
 
     def test_iteration(self, step: int) -> Dict[str, float]:
-        test_cameras = self.test_dataset['cameras']
-        
-        image = torch.from_numpy(self.render(test_cameras, options={"vp_id":step})["color"]).cuda()
+
+        cam_th = self.test_cameras_th.__getitem__(step%len(self.test_cameras_th))
+        image_np = self.render(cam_th,patch_camera=False)["color"]
+        image = torch.from_numpy(image_np).cuda()
         res_y, res_x = image.shape[:2]
         
         gt_image = self.transform_gt_image(torch.from_numpy(self.test_dataset['images'][step]))
@@ -144,22 +145,34 @@ class GSRTMethod(Method):
 
 
     @torch.no_grad()
-    def render(self, camera : Cameras, *, options=None):
+    def render(self, camera : Cameras, *, options=None, patch_camera=True):
         def fit_distortion(x,name):
-            #if x is not None and name == "distortion_parameters":
-            #    x = x[:,None,None,:]
+            if name == "distortion_parameters" and x is not None:
+                x = x[...,None,None,:]
+            if type(x) is not np.ndarray:
+                return torch.tensor(x)
             return torch.from_numpy(x).contiguous().cuda()
-        camera_th = camera.apply(fit_distortion)
-        vp_id = 0 if options is None else options.get('vp_id',0)
-        if len(camera_th) != 1:
-            camera_th = camera_th.__getitem__(vp_id)
+        camera_th = camera.apply(fit_distortion) if patch_camera else camera
+        if camera_th.distortion_parameters.numel()==0 and self.test_dataset is not None:
+            tcam = self.test_cameras_th.__getitem__(0)
+            if tcam.distortion_parameters.numel()!=0:
+                print("adding distortion")
+                from nerfbaselines._types import new_cameras
+                camera_th = new_cameras(poses=camera_th.poses, 
+                                        intrinsics=camera_th.intrinsics,
+                                        camera_models=tcam.camera_models,
+                                        image_sizes=camera_th.image_sizes,
+                                        distortion_parameters=tcam.distortion_parameters,
+                                        nears_fars=camera_th.nears_fars,
+                                        metadata=camera_th.metadata)
+                print(camera_th.distortion_parameters)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
         res_x, res_y = camera_th.image_sizes
         rays = Rays(origins=ray_origins.contiguous(), directions=ray_directions.contiguous(),
                          res_x=res_x, res_y=res_y)
         self.model.eval()
-        img = self.model.forward(rays)
+        img = torch.clamp(self.model.forward(rays),0.,1.)
         return {"color":img.detach().cpu().reshape(res_y,res_x,3).numpy()}
 
     def save(self, path):

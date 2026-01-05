@@ -68,8 +68,8 @@ class Densif3DGRT(BaseDensifStrategy):
         self.model._opacity = optimizable_tensors["opacity"]
         self.model._scaling = optimizable_tensors["scaling"]
         self.model._rotation = optimizable_tensors["rotation"]
-        self.model.xyz_2d = self.model.xyz_2d[valid_points_mask]
-        self.model.xyz_2d.requires_grad_()
+        #self.model.xyz_2d = self.model.xyz_2d[valid_points_mask]
+        #self.model.xyz_2d.requires_grad_()
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -116,7 +116,7 @@ class Densif3DGRT(BaseDensifStrategy):
         self.model._opacity = optimizable_tensors["opacity"]
         self.model._scaling = optimizable_tensors["scaling"]
         self.model._rotation = optimizable_tensors["rotation"]
-        self.model.xyz_2d = torch.zeros_like(self.model._xyz, requires_grad=True).cuda()
+        #self.model.xyz_2d = torch.zeros_like(self.model._xyz, requires_grad=True).cuda()
 
         self.xyz_gradient_accum = torch.zeros((self.model.num_gaussians,1), device="cuda")
         self.denom = torch.zeros((self.model.num_gaussians,1), device="cuda")
@@ -239,6 +239,14 @@ class Densif3DGRT(BaseDensifStrategy):
         pos_grad_norm = torch.norm(self.model.xyz.grad[mask]*dist,dim=1,keepdim=True)/2
         self.xyz_gradient_accum[mask] += pos_grad_norm
         self.denom[mask] += 1
+
+    # def add_densification_stats(self, origin):
+    #     mask = (self.model.xyz.grad != 0).max(dim=1).values
+    #     dist = torch.norm(self.model.xyz[mask] - origin, dim=1, keepdim=True)
+    #     grad_xyz = self.model.xyz.grad[mask]
+    #     pos_grad_norm = torch.tan(torch.norm(grad_xyz,dim=1,keepdim=True)*dist)
+    #     self.xyz_gradient_accum[mask] += pos_grad_norm
+    #     self.denom[mask] += 1
 
     # def add_densification_stats(self, origin):
     #     mask = (self.model.xyz_2d.grad != 0).max(dim=1).values

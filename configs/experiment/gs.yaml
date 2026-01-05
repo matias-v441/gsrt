@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - _self_
+
+checkpoint_type: 3dgs
+checkpoint: /home/matbi/proj/gsrt/data/lego/checkpoint/chkpnt-30000.pth
+dataset: blender
+scene: lego

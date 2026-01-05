@@ -41,6 +41,7 @@ class GaussiansAS {
         swap(first.d_triangles, second.d_triangles);
         swap(first.d_normals, second.d_normals);
         swap(first.d_gaussians, second.d_gaussians);
+        swap(first._gas_size, second._gas_size);
     }
 
     OptixTraversableHandle gas_handle() const {
@@ -62,6 +63,10 @@ class GaussiansAS {
         return d_normals;
     }
 
+    const size_t gas_size() const{
+        return _gas_size;
+    }
+
    private:
     void build();
 
@@ -74,5 +79,6 @@ class GaussiansAS {
     CUdeviceptr d_triangles = 0;
     float3* d_normals = 0;
     GaussiansData d_gaussians{};
+    size_t _gas_size{};
 };
 }  // namespace gsrt::optix_tracer::as

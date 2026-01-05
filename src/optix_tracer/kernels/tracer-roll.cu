@@ -7,12 +7,18 @@ extern "C" {
 __constant__ Params params;
 }
 
+#define SAMPLE_BASED_ORDER true
+
 struct Hit{
     int id;
     float thit;
     float resp;
+#if !SAMPLE_BASED_ORDER
+    float tmax;
+#endif
 };
 
+#if SAMPLE_BASED_ORDER
 template<typename H>
 __device__ __forceinline__ void hitq_push(H* hitq, unsigned int& hitq_size, const H& hit){
     int j = hitq_size;
@@ -42,10 +48,44 @@ __device__ __forceinline__ void hitq_pop(H* hitq, unsigned int& hitq_size){
     hitq[i] = hitq[bott];
     hitq_size--;
 }
+#else
+
+template<typename H>
+__device__ __forceinline__ void hitq_push(H* hitq, unsigned int& hitq_size, const H& hit){
+    int j = hitq_size;
+    int i = (j-1)>>1;
+    while(j!=0 && hitq[i].tmax > hit.tmax){
+        hitq[j] = hitq[i];
+        j = i;
+        i = (j-1)>>1;
+    }
+    hitq[j] = hit;
+    hitq_size++;
+}
+
+template<typename H>
+__device__ __forceinline__ void hitq_pop(H* hitq, unsigned int& hitq_size){
+    int i = 0;
+    int j = 1;
+    int bott = hitq_size-1;
+    float bott_val = hitq[bott].tmax;
+    if(j<bott && hitq[j].tmax > hitq[j+1].tmax) j++;
+    while(j<=bott && hitq[j].tmax < bott_val){
+        hitq[i] = hitq[j];
+        i = j;
+        j = (i<<1)+1;
+        if(j<bott && hitq[j].tmax > hitq[j+1].tmax) j++;
+    }
+    hitq[i] = hitq[bott];
+    hitq_size--;
+}
+#endif
 
 constexpr int triagPerParticle = 20;
 
-constexpr unsigned int chunk_size = 1024;//512;
+//constexpr unsigned int chunk_size = 256;
+constexpr unsigned int chunk_size = 512;
+//constexpr unsigned int chunk_size = 1024;
 
 constexpr float Tmin = 0.001;
 
@@ -89,6 +129,7 @@ extern "C" __global__ void __raygen__rg() {
         unsigned int* uip_acc = reinterpret_cast<unsigned int *>(&acc);
 
         unsigned int hits_capacity = chunk_size;
+        unsigned int num_acc_hits = 0;
         while(hits_capacity <= hits_max_capacity){
             unsigned int n_hits_capacity = hits_capacity;
             optixTrace(
@@ -105,18 +146,18 @@ extern "C" __global__ void __raygen__rg() {
                 2,  // SBT stride   -- See SBT discussion
                 0,  // missSBTIndex -- See SBT discussion
                 uip_acc[0],uip_acc[1],uip_acc[2],uip_acc[3],
-                p_hits[0],p_hits[1],hits_size,n_hits_capacity);
+                p_hits[0],p_hits[1],hits_size,n_hits_capacity,num_acc_hits);
 
+            //atomicMax(params.num_its, n_hits_capacity);
             if(n_hits_capacity == hits_capacity){
                 break;   
             }
-            atomicMax(params.num_its, n_hits_capacity);
             hits_capacity = n_hits_capacity;
             hits_size = 0;
             acc.radiance = make_float3(0.f);
             acc.transmittance = 1.f;
         }
-        //atomicMax(params.num_its, hits_size);
+        atomicMax(params.num_its,hits_size+num_acc_hits);
         while(hits_size!=0 && acc.transmittance > Tmin){
             const Hit& chit = hits[0];
             float3 rad; bool clamped[3];
@@ -221,6 +262,8 @@ extern "C" __global__ void __anyhit__fwd() {
         float3 rad; bool clamped[3];
         compute_radiance(params.gs_sh,params.sh_deg,chit.id,optixGetWorldRayOrigin(),optixGetWorldRayDirection(),rad,clamped);
         add_samp(acc,rad,chit);
+        unsigned int num_acc_hits = optixGetPayload_8();
+        optixSetPayload_8(num_acc_hits+1);
 
         optixSetPayload_0(__float_as_uint(acc.radiance.x));
         optixSetPayload_1(__float_as_uint(acc.radiance.y));
@@ -237,6 +280,9 @@ extern "C" __global__ void __anyhit__fwd() {
     hit.id = hit_id;
     hit.resp = resp;
     hit.thit = thit;
+#if !SAMPLE_BASED_ORDER
+    hit.tmax = optixGetRayTmax();
+#endif
     hitq_push(hitq,hitq_size,hit);
     optixSetPayload_6(hitq_size);
 
@@ -321,6 +367,9 @@ extern "C" __global__ void __anyhit__bwd() {
     hit.id = hit_id;
     hit.resp = resp;
     hit.thit = thit;
+#if !SAMPLE_BASED_ORDER
+    hit.tmax = optixGetRayTmax();
+#endif
     hitq_push(hitq,hitq_size,hit);
     optixSetPayload_6(hitq_size);
 

@@ -33,6 +33,7 @@ def main(cfg: DictConfig):
     # load final checkpoint from previous run if exists
     if cfg.checkpoint is None and cfg.resume_training and cfg.results_dir is not None and os.path.exists(cfg.results_dir):
         cfg.checkpoint = os.path.join(cfg.results_dir, "checkpoint_final.pt")
+    print("Using checkpoint", cfg.checkpoint)
     # require checkpoint if not training
     if not cfg.train and (cfg.checkpoint is None or not os.path.exists(cfg.checkpoint)): 
         raise ValueError("You must provide a valid checkpoint unless you are training.")
@@ -42,12 +43,14 @@ def main(cfg: DictConfig):
                                     features=method_info.get("required_features"),
                                     supported_camera_models=method_info.get("supported_camera_models"),
                                     load_features=True)
-    if cfg.evaluate:
+        presets, config_overrides = get_presets_and_config_overrides(method_spec, train_dataset["metadata"])
+    if cfg.evaluate or cfg.use_viewer:
         test_dataset = load_dataset(cfg.data_path, 
                                     split="test", 
                                     features=method_info.get("required_features"),
                                     supported_camera_models=method_info.get("supported_camera_models"),
                                     load_features=True)
+        presets, config_overrides = get_presets_and_config_overrides(method_spec, test_dataset["metadata"]) 
 
     #presets, config_overrides = get_presets_and_config_overrides(method_spec, train_dataset["metadata"])
     model = method_cls(
@@ -81,32 +84,65 @@ def main(cfg: DictConfig):
             viewer.run()
 
     if cfg.train:
+        print("Training...")
         import time
         start_time = time.time()
-        num_steps = cfg.parameters.n_iterations - model.model.iteration
+        num_steps = cfg.parameters.n_iterations - max(model.model.iteration,cfg.start_step)
+        train_dir = os.path.join(cfg.results_dir, "train")
+        os.makedirs(train_dir, exist_ok=True)
+        OmegaConf.save(cfg, os.path.join(train_dir, "config.yaml"))
+        psnr_ema = 0
         with tqdm(total=num_steps) as pbar:
             for step in range(num_steps):
-                model.train_iteration(step)
+                metrics = model.train_iteration(step)
+                psnr_ema = metrics["psnr"]*0.8 + psnr_ema*0.2
+                if cfg.save_results\
+                      and model.model.iteration % 2000 == 0:
+                    model.model.save(os.path.join(cfg.results_dir,f'checkpoint_final.pt'))#os.path.join(train_dir,f'chpt_{model.model.iteration}.pt'))
                 pbar.update()
-
         end_time = time.time()
         print(f"Training time: {(end_time - start_time)/60:.2f} minutes") 
+        with open(os.path.join(train_dir, "metrics.json"), "wb") as f:
+            f.write(str.encode(
+                f'{{"psnr_ema": {psnr_ema:.4f}, "time_min": {(end_time - start_time)/60:.2f}}}'
+            ))
 
     if cfg.evaluate:
+        print("Evaluating...")
+        print("N",model.model.num_gaussians/1000)
+        eval_dir = os.path.join(cfg.results_dir, "eval")
+        os.makedirs(eval_dir, exist_ok=True) 
+        OmegaConf.save(cfg, os.path.join(eval_dir, "config.yaml"))
         num_steps = len(test_dataset["cameras"])
         with tqdm(total=num_steps) as pbar:
             tot_ssim, tot_psnr, tot_lpips = 0.0, 0.0, 0.0
+            num_its_avg = 0
+            num_its_max = 0
+            fps = 0
             for step in range(num_steps):
                 ssim, psnr, lpips = model.test_iteration(step)
                 tot_ssim += ssim
                 tot_psnr += psnr
                 tot_lpips += lpips
+                # cam_th = model.test_cameras_th.__getitem__(step%len(model.test_cameras_th))
+                # model.render(cam_th,patch_camera=False)
+                num_its_avg += model.model.num_its
+                num_its_max = max(num_its_max,model.model.num_its)
+                fps += model.model.fps
                 pbar.update()
             print(f"Average SSIM: {tot_ssim/num_steps:.4f}, PSNR: {tot_psnr/num_steps:.4f}, LPIPS: {tot_lpips/num_steps:.4f}")
-            with open(os.path.join(cfg.results_dir, "eval.json"), "wb") as f:
+            print(f"num_its_avg: {num_its_avg/num_steps} num_its_max: {num_its_max} fps: {fps/num_steps}")
+            with open(os.path.join(eval_dir, "eval.json"), "wb") as f:
                 f.write(str.encode(
-                    f'{{"ssim": {tot_ssim/num_steps:.4f}, "psnr": {tot_psnr/num_steps:.4f}, "lpips": {tot_lpips/num_steps:.4f}, "time_min": {(end_time - start_time)/60:.2f}}}'
+                    f'{{"ssim": {tot_ssim/num_steps:.4f}, "psnr": {tot_psnr/num_steps:.4f}, "lpips": {tot_lpips/num_steps:.4f}}}'
                 ))
+        from nerfbaselines.evaluation import render_all_images, evaluate, build_evaluation_protocol
+        renders_dir = os.path.join(cfg.results_dir, "renders")
+        for val in render_all_images(model, test_dataset, renders_dir):
+            pass
+        # protocol=build_evaluation_protocol("nerf")
+        # evaluate(renders_dir,os.path.join(eval_dir, "eval_nbs.json"),evaluation_protocol=protocol)
+        
 
     if cfg.use_viewer:
         stack.close()

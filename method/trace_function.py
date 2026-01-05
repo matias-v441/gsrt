@@ -2,16 +2,16 @@
 import torch
 from . import Rays
 
-num = 0
-
 class TraceFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, part_opac, part_xyz, part_scale, part_rot, part_sh, xyz_2d_dummy,
                 tracer, active_sh_deg, rays: Rays, white_background: bool, update: bool, as_params: dict):
+        stats = {}
         if not tracer.has_gaussians() or update:
-            tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,active_sh_deg,as_params)
+            stats = tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,active_sh_deg,as_params)
         out = tracer.trace_fwd(rays.origins, rays.directions, rays.res_x, rays.res_y, white_background)
+        stats = {**stats,**out}
         ctx.rad = out["radiance"]
         ctx.trans = out["transmittance"]
         ctx.dist = out["distance"]
@@ -21,10 +21,7 @@ class TraceFunction(torch.autograd.Function):
         out_color = out["radiance"]
         if white_background:
             out_color = out_color + out["transmittance"]
-        global num
-        num = max(out["num_its"],num)
-        #print("num_its", num)
-        return out_color
+        return out_color, stats
 
     @staticmethod
     def backward(ctx, *grad_outputs):
@@ -48,5 +45,5 @@ class TraceFunction(torch.autograd.Function):
             if torch.any(nan_mask):
                 print(f"found NaN grad in {n}")
             grad[nan_mask] = 0.
-        return grad_opacity, grad_xyz, grad_scale, grad_rot, grad_sh, out["grad_xyz_2d"],\
+        return grad_opacity, grad_xyz, grad_scale, grad_rot, grad_sh, None,\
             None, None, None, None, None, None

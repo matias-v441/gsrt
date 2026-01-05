@@ -8,20 +8,23 @@ __constant__ Params params;
 
 #include "rendering/bwd.cuh"
 
-struct Hit{
-    int id;
-    float thit;
-};
-
 constexpr int triagPerParticle = 20;
 
 constexpr unsigned int chunk_size = 16;
 
 constexpr float Tmin = 0.001;
 
-#define SAMPLE_BASED_ORDER false
+#define SAMPLE_BASED_ORDER true
 
 #define ENSURE_CORRECT_ORDER false
+
+struct Hit{
+    int id;
+    float thit;
+#if SAMPLE_BASED_ORDER
+    float resp;
+#endif
+};
 
 extern "C" __global__ void __raygen__rg() {
 
@@ -90,12 +93,18 @@ extern "C" __global__ void __raygen__rg() {
             // if(last_hit == chit.id) continue; -> skip repeating hit
             if((chit.thit != FLT_MAX) && (acc.transmittance > Tmin || params.compute_grad)){
                 float resp,thit; 
+#if SAMPLE_BASED_ORDER
+                resp = chit.resp;
+                //thit = chit.thit+min_dist+epsT;
+                bool accept = true;
+#else
                 bool accept = compute_response(ray_origin,
                                 ray_direction,
                                 params.gs_xyz[chit.id],
                                 params.gs_opacity[chit.id],
                                 params.gs_rotation[chit.id],params.gs_scaling[chit.id], 
                                 resp,thit);
+#endif
                 if(accept)
                 {
                     float3 rad; bool clamped[3];
@@ -144,8 +153,10 @@ extern "C" __global__ void __anyhit__fwd() {
     hit.id = hit_id;
 #if SAMPLE_BASED_ORDER
     float _resp,_thit; 
-    if(!compute_response(optixGetWorldRayOrigin(),
-        optixGetWorldRayDirection(),
+    const float3 ro = optixGetWorldRayOrigin();
+    const float3 rd = optixGetWorldRayDirection();
+    if(!compute_response(ro+rd*optixGetRayTmin(),
+        rd,
         params.gs_xyz[hit_id],
         params.gs_opacity[hit_id],
         params.gs_rotation[hit_id],params.gs_scaling[hit_id],
@@ -154,6 +165,7 @@ extern "C" __global__ void __anyhit__fwd() {
         return;
     }
     hit.thit = fmaxf(_thit,optixGetRayTmax()); // -> skip repeating hit
+    hit.resp = _resp;
 #else
     float _thit = optixGetRayTmax();
     hit.thit = _thit;

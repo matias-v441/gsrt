@@ -43,7 +43,7 @@ def load_checkpoint(cfg):
         return GaussianModel(cfg,
                 activations=act,
                 xyz=ch['xyz'].detach().cuda(),
-                scaling=act.scaling_inverse(act.scaling(ch['scaling'].detach().cuda())*1.5),
+                scaling=act.scaling_inverse(act.scaling(ch['scaling'].detach().cuda())),#*1.5),
                 rotation=ch['rotation'].detach().cuda(),
                 opacity=ch['opacity'].detach().cuda(),
                 features_dc=ch['f_dc'].detach().cuda(),

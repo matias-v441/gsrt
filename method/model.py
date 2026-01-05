@@ -130,7 +130,10 @@ class GaussianModel(nn.Module):
         self._tracer = GaussiansTracer()
         self.as_params = {"type": cfg.tracer_type}
 
-        self.xyz_2d = torch.zeros_like(xyz, requires_grad=True).cuda()
+        #self.xyz_2d = torch.zeros_like(xyz, requires_grad=True).cuda()
+        self.fps = 0
+        self.gas_size = 0
+        self.num_its = 0
 
     @staticmethod
     def from_dataset(cfg) -> 'GaussianModel':
@@ -141,8 +144,9 @@ class GaussianModel(nn.Module):
         ...
 
     def save(self, path):
-        if not os.path.exists(path):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.isdir(path):
+            path = os.path.join(path,"chpt.pt")
         torch.save({'xyz':self._xyz.detach(),
                     'f_dc':self._features_dc.detach(),
                     'f_rest':self._features_rest.detach(),
@@ -154,7 +158,7 @@ class GaussianModel(nn.Module):
                     'scene_extent':self._scene_extent,
                     'iteration':self.iteration,
                     'optimizer': self.optimizer.state_dict()\
-                          if self.optimizer is not None else None,
+                          if self.optimizer is not None and "state_dict" in self.optimizer.__dict__ else None,
                     'white_bg': self._white_background
                     }, path)  
 
@@ -222,9 +226,13 @@ class GaussianModel(nn.Module):
         return torch.cat((features_dc, features_rest), dim=1) 
 
     def forward(self, rays: Rays):
-        self.xyz_2d.grad = None
-        return TraceFunction.apply(self.opacity, self.xyz, self.scaling, self.rotation, self.features, self.xyz_2d,
+        #self.xyz_2d.grad = None
+        col,stats = TraceFunction.apply(self.opacity, self.xyz, self.scaling, self.rotation, self.features, None,#self.xyz_2d,
                 self._tracer, self.active_sh_degree, rays, self._white_background, self.training, self.as_params)
+        self.fps = 1e3/stats["time_ms"] if stats["time_ms"]!=0 else 0
+        self.gas_size = stats.get("gas_size",0)/1024/1024
+        self.num_its = stats["num_its"]
+        return col
 
     def gradcheck(self, rays: Rays, gt_image, fn_loss, n_points=100, pad_x = None, pad_y = None, **kwargs) -> bool:
         def func(opacity, xyz, scaling, rotation, features):
@@ -280,14 +288,16 @@ class GaussianModel(nn.Module):
     def get_wandb_log(self):
         import wandb
         pos_grad_norm = torch.norm(self._xyz.grad,dim=1) if self._xyz.grad is not None else torch.zeros(self._xyz.shape[0])
-        pos_grad_2d_norm = torch.norm(self.xyz_2d.grad,dim=1) if self.xyz_2d.grad is not None else torch.zeros(self._xyz.shape[0])
+        #pos_grad_2d_norm = torch.norm(self.xyz_2d.grad,dim=1) if self.xyz_2d.grad is not None else torch.zeros(self._xyz.shape[0])
         return {
             'opacities': wandb.Histogram(self.opacity.detach().cpu().numpy(),num_bins=100),
             'scales_max': wandb.Histogram(self.scaling.detach().cpu().numpy().max(axis=-1),num_bins=100),
             'pos_grad_norm': wandb.Histogram(pos_grad_norm.cpu(),num_bins=100),
-            'pos_grad_2d_norm': wandb.Histogram(pos_grad_2d_norm.cpu(),num_bins=100),
+            #'pos_grad_2d_norm': wandb.Histogram(pos_grad_2d_norm.cpu(),num_bins=100),
             'pos_grad_norm_max': pos_grad_norm.cpu().max(),
-            'pos_grad_2d_norm_max': pos_grad_2d_norm.cpu().max(),
+            #'pos_grad_2d_norm_max': pos_grad_2d_norm.cpu().max(),
+            'GAS size': self.gas_size,
+            'FPS': self.fps
             }
 
 GaussianModel.from_dataset = staticmethod(initialize)
