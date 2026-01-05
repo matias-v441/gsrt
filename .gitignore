@@ -159,3 +159,4 @@ _*
 *.ptx
 ptx_embedded.cpp
 *.out
+!setup.sh
