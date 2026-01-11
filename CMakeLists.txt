@@ -100,8 +100,8 @@ message("CUDA_INCLUDE_DIRS: ${CUDA_INCLUDE_DIRS}")
 message("CUDAToolkit_INCLUDE_DIRS: ${CUDAToolkit_INCLUDE_DIRS}")
 
 set(OPTIX_KERNELS
-    src/optix_tracer/kernels/tracer.cu
-    #src/optix_tracer/kernels/tracer-roll.cu
+    #src/optix_tracer/kernels/tracer.cu
+    src/optix_tracer/kernels/tracer-roll.cu
     #src/optix_tracer/kernels/tracer-fast.cu
 )
 

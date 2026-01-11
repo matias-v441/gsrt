@@ -112,36 +112,37 @@ def main(cfg: DictConfig):
         print("N",model.model.num_gaussians/1000)
         eval_dir = os.path.join(cfg.results_dir, "eval")
         os.makedirs(eval_dir, exist_ok=True) 
-        OmegaConf.save(cfg, os.path.join(eval_dir, "config.yaml"))
-        num_steps = len(test_dataset["cameras"])
-        with tqdm(total=num_steps) as pbar:
-            tot_ssim, tot_psnr, tot_lpips = 0.0, 0.0, 0.0
-            num_its_avg = 0
-            num_its_max = 0
-            fps = 0
-            for step in range(num_steps):
-                ssim, psnr, lpips = model.test_iteration(step)
-                tot_ssim += ssim
-                tot_psnr += psnr
-                tot_lpips += lpips
-                # cam_th = model.test_cameras_th.__getitem__(step%len(model.test_cameras_th))
-                # model.render(cam_th,patch_camera=False)
-                num_its_avg += model.model.num_its
-                num_its_max = max(num_its_max,model.model.num_its)
-                fps += model.model.fps
-                pbar.update()
-            print(f"Average SSIM: {tot_ssim/num_steps:.4f}, PSNR: {tot_psnr/num_steps:.4f}, LPIPS: {tot_lpips/num_steps:.4f}")
-            print(f"num_its_avg: {num_its_avg/num_steps} num_its_max: {num_its_max} fps: {fps/num_steps}")
-            with open(os.path.join(eval_dir, "eval.json"), "wb") as f:
-                f.write(str.encode(
-                    f'{{"ssim": {tot_ssim/num_steps:.4f}, "psnr": {tot_psnr/num_steps:.4f}, "lpips": {tot_lpips/num_steps:.4f}}}'
-                ))
+        # OmegaConf.save(cfg, os.path.join(eval_dir, "config.yaml"))
+        # num_steps = len(test_dataset["cameras"])
+        # with tqdm(total=num_steps) as pbar:
+        #     tot_ssim, tot_psnr, tot_lpips = 0.0, 0.0, 0.0
+        #     num_its_avg = 0
+        #     num_its_max = 0
+        #     fps = 0
+        #     for step in range(num_steps):
+        #         ssim, psnr, lpips = model.test_iteration(step)
+        #         tot_ssim += ssim
+        #         tot_psnr += psnr
+        #         tot_lpips += lpips
+        #         # cam_th = model.test_cameras_th.__getitem__(step%len(model.test_cameras_th))
+        #         # model.render(cam_th,patch_camera=False)
+        #         num_its_avg += model.model.num_its
+        #         num_its_max = max(num_its_max,model.model.num_its)
+        #         fps += model.model.fps
+        #         pbar.update()
+        #     print(f"Average SSIM: {tot_ssim/num_steps:.4f}, PSNR: {tot_psnr/num_steps:.4f}, LPIPS: {tot_lpips/num_steps:.4f}")
+        #     print(f"num_its_avg: {num_its_avg/num_steps} num_its_max: {num_its_max} fps: {fps/num_steps}")
+        #     with open(os.path.join(eval_dir, "eval.json"), "wb") as f:
+        #         f.write(str.encode(
+        #             f'{{"ssim": {tot_ssim/num_steps:.4f}, "psnr": {tot_psnr/num_steps:.4f}, "lpips": {tot_lpips/num_steps:.4f}}}'
+        #         ))
         from nerfbaselines.evaluation import render_all_images, evaluate, build_evaluation_protocol
         renders_dir = os.path.join(cfg.results_dir, "renders")
         for val in render_all_images(model, test_dataset, renders_dir):
             pass
-        # protocol=build_evaluation_protocol("nerf")
-        # evaluate(renders_dir,os.path.join(eval_dir, "eval_nbs.json"),evaluation_protocol=protocol)
+        #protocol=build_evaluation_protocol("nerf")
+        #evaluate(renders_dir,os.path.join(eval_dir, "eval_nbs.json"),evaluation_protocol=protocol)
+        evaluate(renders_dir,os.path.join(eval_dir, "eval_nbs.json"))
         
 
     if cfg.use_viewer:

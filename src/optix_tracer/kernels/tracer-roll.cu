@@ -84,8 +84,8 @@ __device__ __forceinline__ void hitq_pop(H* hitq, unsigned int& hitq_size){
 constexpr int triagPerParticle = 20;
 
 //constexpr unsigned int chunk_size = 256;
-constexpr unsigned int chunk_size = 512;
-//constexpr unsigned int chunk_size = 1024;
+//constexpr unsigned int chunk_size = 512;
+constexpr unsigned int chunk_size = 1024;
 
 constexpr float Tmin = 0.001;
 
@@ -222,7 +222,6 @@ extern "C" __global__ void __raygen__rg() {
 }
 
 extern "C" __global__ void __anyhit__fwd() {
-
     optixSetPayloadTypes(OPTIX_PAYLOAD_TYPE_ID_0);
 
     Acc acc;

@@ -169,7 +169,7 @@ __device__ __forceinline__ void add_grad_at_naive(
     const float3 C_b = fmaxf(make_float3(0),
         Tnext > Tmin? (acc_full.radiance-acc.radiance)/Tnext : make_float3(0) 
         );
-    const float3 dC_dresp = acc.transmittance*(rad-C_b);
+    const float3 dC_dresp = acc.transmittance*(rad-C_b) - background*acc_full.transmittance/max(eps,1.f-resp);
 
     const Matrix3x3 inv_RS = construct_inv_RS(quat,scale);
 
@@ -337,7 +337,7 @@ __device__ __forceinline__ void add_grad_at(
     const float3 C_b = fmaxf(make_float3(0),
         Tnext > Tmin? (acc_full.radiance-acc.radiance)/Tnext : make_float3(0) 
         );
-    const float3 dC_dresp = acc.transmittance*(rad-C_b);
+    const float3 dC_dresp = acc.transmittance*(rad-C_b) - background*acc_full.transmittance/max(eps,1.f-resp);
 
     const float dL_dresp = dot(dL_dC,dC_dresp);
     const float dL_dG = dL_dresp*opacity;

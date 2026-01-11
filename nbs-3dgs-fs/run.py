@@ -11,6 +11,8 @@ from nerfbaselines.training import (
 )
 
 from nerfbaselines.viewer import Viewer
+import nerfbaselines
+print(nerfbaselines.__file__)
 
 import os
 os.environ["NERFBASELINES_REGISTER"]=f"{os.getcwd()}/method/fsgs_method_spec.py"
@@ -18,9 +20,9 @@ import sys
 
 method_name = "fsgs"
 unfisheye = False
-data = f"/home/matbi/proj/Fisheye-GS/data/zipnerf-undistorted/{sys.argv[1]}" # FovX 1.713721368216191 FovY 1.1605348134616158 
-#data = f"/home/matbi/proj/Fisheye-GS/data/zipnerf-fisheye/{sys.argv[1]}" # FovX 1.9344611811489427 FovY 1.5364104594075099
-root_dir=f"{method_name}_{sys.argv[1]}_undist"
+#data = f"/home/matbi/proj/Fisheye-GS/data/zipnerf-undistorted/{sys.argv[1]}" # FovX 1.713721368216191 FovY 1.1605348134616158 
+data = f"/home/matbi/proj/Fisheye-GS/data/zipnerf-fisheye/{sys.argv[1]}" # FovX 1.9344611811489427 FovY 1.5364104594075099
+root_dir=f"{method_name}_{sys.argv[1]}_fisheye"
 
 checkpoint=f"{root_dir}/checkpoint"
 im_dir=f"{root_dir}/renders"

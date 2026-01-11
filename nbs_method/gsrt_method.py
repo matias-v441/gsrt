@@ -26,7 +26,9 @@ from method.initialization import initialize
 from method.checkpoint import load_checkpoint
 
 import lovely_tensors as lt
-lt.monkey_patch()
+#lt.monkey_patch()
+
+import method.cam_grut as camgrut
 
 
 class GSRTMethod(Method):
@@ -70,6 +72,7 @@ class GSRTMethod(Method):
     def train_iteration(self, step: int) -> Dict[str, float]:
         iter = self.training.start_iter+step
         random.seed(iter)
+        torch.manual_seed(iter)
         batch_id = (iter-1)%len(self.train_cameras_th)
         if batch_id == 0 or step == 0:
             self.viewpoint_ids = torch.randperm(len(self.train_cameras_th))
@@ -77,7 +80,19 @@ class GSRTMethod(Method):
         camera_th = self.train_cameras_th.__getitem__(vp_id)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
 
+        # fx,fy,cx,cy = camera_th.intrinsics
+        # k1,k2,p1,p2,k3,k4 = camera_th.distortion_parameters.squeeze()
+        # w,h = camera_th.image_sizes
+        # ray_directions = camgrut.create_fisheye_camera(np.array([cx.item(),cy.item()]).astype(np.float32),
+        #                                                np.array([fx.item(),fy.item()]).astype(np.float32),
+        #                                                np.array([k1.item(),k2.item(),k3.item(),k4.item()]).astype(np.float32),
+        #                                                 xy, xy.device, w.item(),h.item())
+        # rotation = camera_th.poses[..., :3, :3]  # (..., 3, 3)
+        # ray_directions = (ray_directions[..., None, :] * rotation).sum(-1)
+        # ray_origins = torch.broadcast_to(camera_th.poses[..., :3, 3], ray_directions.shape)
+
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
+
         res_x, res_y = camera_th.image_sizes
         ray_origins = ray_origins.float().squeeze()
         ray_directions = ray_directions.float().squeeze()
@@ -97,6 +112,12 @@ class GSRTMethod(Method):
         out = self.training.step(t_step=step, rays=rays, gt_image=gt_image)
 
         with torch.no_grad():
+            # import matplotlib.pyplot as plt
+            # plt.figure()
+            # plt.imshow(out["image"].detach().reshape(1,rays.res_y,rays.res_x,3).squeeze().cpu().numpy())
+            # plt.figure()
+            # plt.imshow(gt_image.detach().reshape(1,rays.res_y,rays.res_x,3).squeeze().cpu().numpy())
+            # plt.show()
             image = out["image"].detach()
             psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
             metrics = {"loss":out["loss"],"vp_id":vp_id,
@@ -167,7 +188,19 @@ class GSRTMethod(Method):
                                         metadata=camera_th.metadata)
                 print(camera_th.distortion_parameters)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
+
+        # k1,k2,p1,p2,k3,k4 = camera_th.distortion_parameters.squeeze()
+        # fx,fy,cx,cy = camera_th.intrinsics
+        # w,h = camera_th.image_sizes
+        # ray_directions = camgrut.create_fisheye_camera(np.array([cx.item(),cy.item()]).astype(np.float32),
+        #                                                np.array([fx.item(),fy.item()]).astype(np.float32),
+        #                                                np.array([k1.item(),k2.item(),k3.item(),k4.item()]).astype(np.float32),
+        #                                                 xy, xy.device, w.item(),h.item())
+        # ray_origins = torch.broadcast_to(camera_th.poses[..., :3, 3], ray_directions.shape)
+        # rotation = camera_th.poses[..., :3, :3]  # (..., 3, 3)
+        # ray_directions = (ray_directions[..., None, :] * rotation).sum(-1)
         ray_origins, ray_directions = cameras.get_rays(camera_th, xy[None])
+
         res_x, res_y = camera_th.image_sizes
         rays = Rays(origins=ray_origins.contiguous(), directions=ray_directions.contiguous(),
                          res_x=res_x, res_y=res_y)

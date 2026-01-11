@@ -29,8 +29,8 @@ tracer_type: optix
 
 datasets:
   blender: external://blender 
-  #mipnerf: external://mipnerf360
-  mipnerf: /home/matbi/proj/3dgrut/data/mipnerf360 #external://mipnerf360
+  mipnerf: external://mipnerf360
+  #mipnerf: /home/matbi/proj/3dgrut/data/mipnerf360 #external://mipnerf360
   zipnerf: /home/matbi/proj/Fisheye-GS/data/zipnerf-undistorted
   zipnerf_nbs: external://zipnerf
   zipnerf_fisheye: /home/matbi/proj/Fisheye-GS/data/zipnerf-fisheye

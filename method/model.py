@@ -125,7 +125,7 @@ class GaussianModel(nn.Module):
         self._features_dc = nn.Parameter(features_dc.cuda())
         self._features_rest = nn.Parameter(features_rest.cuda())
 
-        self._white_background = white_bg
+        self._white_background = cfg.white_bg
         self._optimizer = optimizer 
         self._tracer = GaussiansTracer()
         self.as_params = {"type": cfg.tracer_type}
