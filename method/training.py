@@ -61,6 +61,9 @@ class Training:
 
     def step(self, *, t_step, rays, gt_image) -> float:
 
+        import time
+        t0 = time.perf_counter()
+
         self.model.train()
 
         self.model.iteration = self.start_iter + t_step
@@ -85,6 +88,10 @@ class Training:
 
         self.densif_strategy.densify(self.model.iteration, ray_origins=rays.origins)
 
+        self.model.optimizer.step()
+
+        dt = (time.perf_counter() - t0)*1000 # ms
+
         with torch.no_grad():
 
             # Log metrics to wandb if enabled
@@ -98,12 +105,15 @@ class Training:
                     "num_gaussians": self.model.num_gaussians,
                     "learning_rate": self.model.optimizer.param_groups[0]['lr'],
                     "iteration": self.model.iteration,
+                    "Tms/fwd": self.model.perf["T_fwd"],
+                    "Tms/bwd": self.model.perf["T_bwd"],
+                    "Tms/total": dt,
+                    "Tfrac/fwd": self.model.perf["T_fwd"]/dt,
+                    "Tfrac/bwd": self.model.perf["T_bwd"]/dt,
                     **self.densif_strategy.get_wandb_log(),
                     **self.model.get_wandb_log()
                 }, step=self.model.iteration)
 
-        # Optimizer step
-        self.model.optimizer.step()
         self.model.optimizer.zero_grad()
         
-        return {"loss": loss.item(), "image": image}
+        return {"loss": loss.item(), "image": image, "T":dt}

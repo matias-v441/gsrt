@@ -86,6 +86,7 @@ constexpr int triagPerParticle = 20;
 //constexpr unsigned int chunk_size = 256;
 //constexpr unsigned int chunk_size = 512;
 constexpr unsigned int chunk_size = 1024;
+//constexpr unsigned int chunk_size = 128;
 
 constexpr float Tmin = 0.001;
 

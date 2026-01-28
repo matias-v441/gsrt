@@ -123,7 +123,11 @@ class GSRTMethod(Method):
             metrics = {"loss":out["loss"],"vp_id":vp_id,
                 "out_image": image.detach().cpu().reshape(res_y,res_x,3).numpy(),
                 "densif_stats":self.training.densif_strategy.densif_stats,
-                "psnr":psnr}
+                "psnr":psnr,
+                "T_fwd":self.model.perf["T_fwd"],
+                "T_bwd":self.model.perf["T_bwd"],
+                "T":out["T"],
+                }
         return metrics
     
 
@@ -177,7 +181,6 @@ class GSRTMethod(Method):
         if camera_th.distortion_parameters.numel()==0 and self.test_dataset is not None:
             tcam = self.test_cameras_th.__getitem__(0)
             if tcam.distortion_parameters.numel()!=0:
-                print("adding distortion")
                 from nerfbaselines._types import new_cameras
                 camera_th = new_cameras(poses=camera_th.poses, 
                                         intrinsics=camera_th.intrinsics,
@@ -186,7 +189,6 @@ class GSRTMethod(Method):
                                         distortion_parameters=tcam.distortion_parameters,
                                         nears_fars=camera_th.nears_fars,
                                         metadata=camera_th.metadata)
-                print(camera_th.distortion_parameters)
         xy = cameras.get_image_pixels(camera_th.image_sizes)
 
         # k1,k2,p1,p2,k3,k4 = camera_th.distortion_parameters.squeeze()

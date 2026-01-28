@@ -143,33 +143,6 @@ add_custom_command(
     COMMENT "Embedding PTX files"
 )
 
-# macro(cuda_compile_and_embed output_var generated_files_name)
-#     set(c_var_name ${output_var})
-#     set(generated_files "${${generated_files_name}}")
-#     list(GET "${generated_files_name}" 0 ptx_file)
-#     get_filename_component(embedded_file ${ptx_file}_embedded.cpp NAME)
-#     set(embedded_file "${BUILD_DIRECTORY}/${embedded_file}")
-#     add_custom_command(
-#         OUTPUT ${embedded_file}
-#         COMMAND ${BIN2C} --padd 0 --type char --name ${c_var_name} ${ptx_file} > ${embedded_file}
-#         DEPENDS ${ptx_files} ${generated_files}
-#         COMMENT "compiling (and embedding ptx from) ${cuda_file}")
-#     set(${output_var} ${embedded_file})
-#     list(APPEND "${generated_files_name}" ${embedded_file})
-# endmacro()
-
-# CUDA_WRAP_SRCS(traversal PTX gaussians_tracer_ptx
-#     # src/optix_tracer/optix_types.h
-#     # src/utils/preprocessor.h
-#     # src/utils/vec_math.h
-#     # src/utils/Matrix.h
-#     # src/utils/auxiliary.h
-# 
-#     src/optix_tracer/kernels/gs_tracer_bwd_grut.cu
-# 
-#     OPTIONS -rdc true)
-# cuda_compile_and_embed(ptx_code_file gaussians_tracer_ptx)
-
 add_link_options(-flto=auto)  # disables some warning
 pybind11_add_module(gsrt_cpp_extension
     ${ptx_code_file}

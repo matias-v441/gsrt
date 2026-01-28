@@ -14,7 +14,7 @@ constexpr unsigned int chunk_size = 16;
 
 constexpr float Tmin = 0.001;
 
-#define SAMPLE_BASED_ORDER true
+#define SAMPLE_BASED_ORDER false
 
 #define ENSURE_CORRECT_ORDER false
 
@@ -23,6 +23,7 @@ struct Hit{
     float thit;
 #if SAMPLE_BASED_ORDER
     float resp;
+    float tmesh;
 #endif
 };
 
@@ -44,8 +45,6 @@ extern "C" __global__ void __raygen__rg() {
     Hit* hits_ptr = reinterpret_cast<Hit*>(hits);
     memcpy(p_hits, &hits_ptr, sizeof(void*));
 
-    unsigned int hits_size = 0;
-
     float max_dist = 1e16f; 
     float min_dist = 0.f;
     constexpr float epsT = 1e-9f;
@@ -62,11 +61,12 @@ extern "C" __global__ void __raygen__rg() {
     Acc acc_full{};
     acc_full.radiance = params.radiance[id];
     acc_full.transmittance = params.transmittance[id];
-    // int last_hit = -1; -> skip repeating hit
+
     while((min_dist < max_dist) && (acc.transmittance > Tmin || params.compute_grad)){
         for(int i=0; i<chunk_size;++i){
             hits[i].thit = FLT_MAX;
         }
+        unsigned int u_min_dist = __float_as_uint(min_dist);
         optixTrace(
             OPTIX_PAYLOAD_TYPE_ID_0,
             params.handle,
@@ -82,7 +82,8 @@ extern "C" __global__ void __raygen__rg() {
             2,  // SBT stride   -- See SBT discussion
             0,  // missSBTIndex -- See SBT discussion
             uip_acc[0],uip_acc[1],uip_acc[2],uip_acc[3],
-            p_hits[0],p_hits[1],hits_size,hits_size);
+            p_hits[0],p_hits[1],u_min_dist);
+        // min_dist = __uint_as_float(u_min_dist);
 
         if(hits[0].thit == FLT_MAX){
             break;
@@ -90,7 +91,6 @@ extern "C" __global__ void __raygen__rg() {
 #pragma unroll
         for(int i=0; i<chunk_size;++i){
             const Hit chit = hits[i];
-            // if(last_hit == chit.id) continue; -> skip repeating hit
             if((chit.thit != FLT_MAX) && (acc.transmittance > Tmin || params.compute_grad)){
                 float resp,thit; 
 #if SAMPLE_BASED_ORDER
@@ -122,8 +122,11 @@ extern "C" __global__ void __raygen__rg() {
                     }
                     acc.transmittance *= (1.-resp);
                 }
+#if SAMPLE_BASED_ORDER
+                min_dist = fmaxf(min_dist, chit.tmesh); // same as fmaxf(min_dist, chit.thit);
+#else
                 min_dist = chit.thit; // same as fmaxf(min_dist, chit.thit);
-                // last_hit = chit.id; -> skip repeating hit
+#endif
             }
         }
         if(hits[chunk_size-1].thit == FLT_MAX) break; // buffer is not full->finish
@@ -137,7 +140,6 @@ extern "C" __global__ void __raygen__rg() {
 
 extern "C" __global__ void __anyhit__fwd() {
 
-    //atomicAdd(params.num_its,1ull);
 
     optixSetPayloadTypes(OPTIX_PAYLOAD_TYPE_ID_0);
 
@@ -164,7 +166,11 @@ extern "C" __global__ void __anyhit__fwd() {
         optixIgnoreIntersection();
         return;
     }
-    hit.thit = fmaxf(_thit,optixGetRayTmax()); // -> skip repeating hit
+    //hit.thit = fmaxf(_thit,optixGetRayTmax()); // -> skip repeating hit
+    //optixSetPayload_6(max(optixGetPayload_6(),__float_as_uint(optixGetRayTmax())));
+    hit.tmesh = optixGetRayTmax();
+    _thit = fmaxf(_thit,optixGetRayTmax());
+    hit.thit = _thit; 
     hit.resp = _resp;
 #else
     float _thit = optixGetRayTmax();

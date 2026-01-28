@@ -134,6 +134,7 @@ class GaussianModel(nn.Module):
         self.fps = 0
         self.gas_size = 0
         self.num_its = 0
+        self.perf = {"T_fwd":0,"T_bwd":0}
 
     @staticmethod
     def from_dataset(cfg) -> 'GaussianModel':
@@ -228,7 +229,7 @@ class GaussianModel(nn.Module):
     def forward(self, rays: Rays):
         #self.xyz_2d.grad = None
         col,stats = TraceFunction.apply(self.opacity, self.xyz, self.scaling, self.rotation, self.features, None,#self.xyz_2d,
-                self._tracer, self.active_sh_degree, rays, self._white_background, self.training, self.as_params)
+                self._tracer, self.active_sh_degree, rays, self._white_background, self.training, self.as_params, self.perf)
         self.fps = 1e3/stats["time_ms"] if stats["time_ms"]!=0 else 0
         self.gas_size = stats.get("gas_size",0)/1024/1024
         self.num_its = stats["num_its"]

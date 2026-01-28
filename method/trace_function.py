@@ -6,11 +6,12 @@ class TraceFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, part_opac, part_xyz, part_scale, part_rot, part_sh, xyz_2d_dummy,
-                tracer, active_sh_deg, rays: Rays, white_background: bool, update: bool, as_params: dict):
+                tracer, active_sh_deg, rays: Rays, white_background: bool, update: bool, as_params: dict, perf: dict):
         stats = {}
         if not tracer.has_gaussians() or update:
             stats = tracer.load_gaussians(part_xyz,part_rot,part_scale,part_opac,part_sh,active_sh_deg,as_params)
         out = tracer.trace_fwd(rays.origins, rays.directions, rays.res_x, rays.res_y, white_background)
+        perf["T_fwd"] = out["time_ms"]
         stats = {**stats,**out}
         ctx.rad = out["radiance"]
         ctx.trans = out["transmittance"]
@@ -18,6 +19,7 @@ class TraceFunction(torch.autograd.Function):
         ctx.rays = rays
         ctx.tracer = tracer
         ctx.white_background = white_background
+        ctx.perf = perf
         out_color = out["radiance"]
         if white_background:
             out_color = out_color + out["transmittance"]
@@ -31,6 +33,7 @@ class TraceFunction(torch.autograd.Function):
                                     rays.res_x, rays.res_y,
                                     ctx.white_background,
                                     dout_dC, ctx.rad, ctx.trans, ctx.dist)
+        ctx.perf["T_bwd"] = out["time_ms"]
         grad_xyz = out["grad_xyz"]
         grad_opacity = out["grad_opacity"][:,None]
         grad_scale = out["grad_scale"]
@@ -46,4 +49,4 @@ class TraceFunction(torch.autograd.Function):
                 print(f"found NaN grad in {n}")
             grad[nan_mask] = 0.
         return grad_opacity, grad_xyz, grad_scale, grad_rot, grad_sh, None,\
-            None, None, None, None, None, None
+            None, None, None, None, None, None, None
