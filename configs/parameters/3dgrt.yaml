@@ -1,0 +1,10 @@
+defaults:
+  - 3dgs
+
+densification:
+  densification_interval: 300
+  prune_interval: 100
+  densify_min_opacity: 0.01
+
+optimizer:
+  opacity_lr: 0.05

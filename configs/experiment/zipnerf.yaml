@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - _self_
+
+dataset: zipnerf
+scene: alameda
+save_results: true
+results_dir: results/zipnerf_alameda_gsrt
+white_bg: false

@@ -1,0 +1,4 @@
+# @package _global_
+use_wandb: true
+evaluate: true
+train: true

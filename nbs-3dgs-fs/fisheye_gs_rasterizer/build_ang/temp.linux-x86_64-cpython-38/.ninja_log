@@ -1,0 +1,6 @@
+# ninja log v5
+0	2693	1767047077777457817	/home/matbi/proj/nbs-3dgs-fs/fisheye_gs_rasterizer/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/forward.o	377ebd5a10e99bbe
+0	2794	1767047077878455995	/home/matbi/proj/nbs-3dgs-fs/fisheye_gs_rasterizer/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/backward.o	a4f5be09c0510e28
+0	7767	1767047082844366485	/home/matbi/proj/nbs-3dgs-fs/fisheye_gs_rasterizer/build/temp.linux-x86_64-cpython-38/cuda_rasterizer/rasterizer_impl.o	455a41a1ebc04d9f
+0	25246	1767047100229053763	/home/matbi/proj/nbs-3dgs-fs/fisheye_gs_rasterizer/build/temp.linux-x86_64-cpython-38/ext.o	e8017b201f2cbae1
+0	47351	1767047122431655772	/home/matbi/proj/nbs-3dgs-fs/fisheye_gs_rasterizer/build/temp.linux-x86_64-cpython-38/rasterize_points.o	44936cfdd36ebd5b

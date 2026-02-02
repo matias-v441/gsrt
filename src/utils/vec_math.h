@@ -2615,3 +2615,6 @@ INLINE HOSTDEVICE float4 make_float4(const float2& v0, const float2& v1) { retur
 /** @} */
 
 
+INLINE HOSTDEVICE float& vec_c(float3& vec,int a){return (&vec.x)[a];};
+
+INLINE HOSTDEVICE const float& vec_c(const float3& vec,int a){return (&vec.x)[a];};

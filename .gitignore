@@ -139,6 +139,24 @@ outputs/
 
 .vscode
 
-tetranerf/
 data/
 
+*.jpg
+
+wandb/
+run_log*
+*.zip
+*checkpoint*/
+*.pth
+*.pt
+nb-info.json
+lego_3dgrt/
+*.jpg
+_*
+!__init__.py
+*.sh
+*.json
+*.ptx
+ptx_embedded.cpp
+*.out
+!setup.sh
