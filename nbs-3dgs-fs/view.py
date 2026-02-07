@@ -1,16 +1,16 @@
 from tqdm import tqdm
 from contextlib import ExitStack
-from nerfbaselines import backends
-from nerfbaselines.datasets import load_dataset
-from nerfbaselines import (
+from _nerfbaselines import backends
+from _nerfbaselines.datasets import load_dataset
+from _nerfbaselines import (
     build_method_class,
     get_method_spec,
 )
-from nerfbaselines.training import (
+from _nerfbaselines.training import (
     get_presets_and_config_overrides,
 )
 
-from nerfbaselines.viewer import Viewer
+from _nerfbaselines.viewer import Viewer
 import sys
 
 method_name = "fsgs"

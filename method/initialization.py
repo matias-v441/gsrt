@@ -149,7 +149,7 @@ def _convert_dataset_to_gaussian_splatting(dataset: Optional[Dataset], tempdir: 
             warnings.warn("white_background=True is set, but the dataset is not a blender scene. The background may not be white.")
         image = Image.fromarray(im_data)
         sampling_mask = None
-        if dataset["sampling_masks"] is not None:
+        if dataset.get("sampling_masks",None) is not None:
             sampling_mask = Image.fromarray((dataset["sampling_masks"][idx] * 255).astype(np.uint8))
 
         cam_info = _load_caminfo(

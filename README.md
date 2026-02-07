@@ -5,13 +5,13 @@ This repository contains my Master’s thesis work on **ray tracing–based rend
 ## Contents
 
 - **Differentiable ray tracer for 3D Gaussians**
-  - Custom OptiX-based ray tracing pipeline
+  - Custom OptiX-based ray tracing pipeline [here](https://github.com/matias-v441/gsrt/tree/devel/src)
   - End-to-end differentiable rendering and learning setup
   - Achieves slightly improved results compared to [3DGRUT](https://github.com/nv-tlabs/3dgrut)
 
 - **Wide-angle / distorted camera support**
   - Patch for [FisheyeGS](https://github.com/zmliao/Fisheye-GS) in [here](https://github.com/matias-v441/gsrt/tree/devel/nbs-3dgs-fs)
-  - Patch for [NerfBaselines](https://github.com/nerfbaselines/nerfbaselines) (undistortion procedure)
+  - Patch for [NerfBaselines](https://github.com/nerfbaselines/nerfbaselines) [here](https://github.com/matias-v441/gsrt/tree/devel/method/patch_cameras.py)
 
 The project is primarily intended as a **technical artifact** demonstrating algorithmic design, numerical considerations, and  trade-offs, rather than a polished end-user library.
 

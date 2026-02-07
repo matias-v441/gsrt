@@ -1,18 +1,18 @@
 from tqdm import tqdm
 from contextlib import ExitStack
-from nerfbaselines import backends
-from nerfbaselines.datasets import load_dataset
-from nerfbaselines import (
+from _nerfbaselines import backends
+from _nerfbaselines.datasets import load_dataset
+from _nerfbaselines import (
     build_method_class,
     get_method_spec,
 )
-from nerfbaselines.training import (
+from _nerfbaselines.training import (
     get_presets_and_config_overrides,
 )
 
-from nerfbaselines.viewer import Viewer
-import nerfbaselines
-print(nerfbaselines.__file__)
+from _nerfbaselines.viewer import Viewer
+import _nerfbaselines
+print(_nerfbaselines.__file__)
 
 import os
 os.environ["NERFBASELINES_REGISTER"]=f"{os.getcwd()}/method/fsgs_method_spec.py"
@@ -105,7 +105,7 @@ if not eval_mode:
             pbar.set_postfix({"psnr": f"{metrics['psnr']:.2f}"})
             pbar.update()
 
-from nerfbaselines.evaluation import render_all_images, evaluate
+from _nerfbaselines.evaluation import render_all_images, evaluate
 for val in render_all_images(model, test_dataset, im_dir):
     pass
 evaluate(im_dir, eval_path)

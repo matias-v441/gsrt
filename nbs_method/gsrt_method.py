@@ -29,7 +29,8 @@ import lovely_tensors as lt
 #lt.monkey_patch()
 
 import method.cam_grut as camgrut
-
+import method.patch_cameras as nbs_patch
+nbs_patch.apply()
 
 class GSRTMethod(Method):
 
@@ -112,12 +113,12 @@ class GSRTMethod(Method):
         out = self.training.step(t_step=step, rays=rays, gt_image=gt_image)
 
         with torch.no_grad():
-            # import matplotlib.pyplot as plt
-            # plt.figure()
-            # plt.imshow(out["image"].detach().reshape(1,rays.res_y,rays.res_x,3).squeeze().cpu().numpy())
-            # plt.figure()
-            # plt.imshow(gt_image.detach().reshape(1,rays.res_y,rays.res_x,3).squeeze().cpu().numpy())
-            # plt.show()
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.imshow(out["image"].detach().reshape(1,rays.res_y,rays.res_x,3).squeeze().cpu().numpy())
+            plt.figure()
+            plt.imshow(gt_image.detach().reshape(1,rays.res_y,rays.res_x,3).squeeze().cpu().numpy())
+            plt.show()
             image = out["image"].detach()
             psnr = 10 * torch.log10(1 / torch.mean((image - gt_image) ** 2))
             metrics = {"loss":out["loss"],"vp_id":vp_id,

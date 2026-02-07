@@ -1,4 +1,4 @@
-from nerfbaselines import register
+from _nerfbaselines import register
 
 register({
     "method_class": "fsgs_method:GaussianSplatting",

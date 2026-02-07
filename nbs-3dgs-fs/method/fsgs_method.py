@@ -24,7 +24,7 @@ import os
 import tempfile
 import numpy as np
 from PIL import Image
-from nerfbaselines import (
+from _nerfbaselines import (
     Method, MethodInfo, ModelInfo, RenderOutput, Cameras, camera_model_to_int, Dataset
 )
 import shlex
@@ -389,7 +389,7 @@ class GaussianSplatting(Method):
                 print(camera_th.distortion_parameters)
                 if camera_th.distortion_parameters.numel()==0 and self.train_cameras_th is not None:
                     print("adding distortion")
-                    from nerfbaselines._types import new_cameras
+                    from _nerfbaselines._types import new_cameras
                     tcam = self.train_cameras_th.__getitem__(0)
                     camera_th = new_cameras(poses=camera_th.poses, 
                                         intrinsics=camera_th.intrinsics,
@@ -406,8 +406,8 @@ class GaussianSplatting(Method):
             return self._format_output({"color": color}, options)
 
     def undistort_image(self, image, viewpoint_cam_nbs, display=False, cam_id=0, iteration=0):
-        from nerfbaselines import cameras 
-        from nerfbaselines.cameras import _radial_and_tangential_undistort, interpolate_bilinear
+        from _nerfbaselines import cameras 
+        from _nerfbaselines.cameras import _radial_and_tangential_undistort, interpolate_bilinear
         xy = cameras.get_image_pixels(viewpoint_cam_nbs.image_sizes).float()
         fx,fy,cx,cy = torch.moveaxis(viewpoint_cam_nbs.intrinsics,-1,0)
         xy[:,0] = (xy[:,0] - cx)/fx
