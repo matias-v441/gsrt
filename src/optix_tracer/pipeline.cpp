@@ -47,20 +47,8 @@ TraceRaysPipeline::TraceRaysPipeline(const OptixDeviceContext &context, int8_t d
             //| OPTIX_PAYLOAD_SEMANTICS_MS_READ  | OPTIX_PAYLOAD_SEMANTICS_MS_WRITE
             //| OPTIX_PAYLOAD_SEMANTICS_CH_READ  | OPTIX_PAYLOAD_SEMANTICS_CH_WRITE
             ;
-        constexpr int payload_size_fwd = 32;//8;
-        unsigned int semantics_fwd[payload_size_fwd];/* = {
-                                    payload_flags,
-                                    payload_flags,
-                                    payload_flags,
-                                    payload_flags,
-
-                                    payload_flags,
-                                    payload_flags,
-
-                                    payload_flags,
-
-                                    payload_flags,
-        };*/
+        constexpr int payload_size_fwd = 32;
+        unsigned int semantics_fwd[payload_size_fwd];
         for(int i = 0; i < 32; ++i){
             semantics_fwd[i] = payload_flags;
         }

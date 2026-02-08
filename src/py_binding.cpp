@@ -8,7 +8,7 @@
 #include <variant>
 
 #include "tracer.h"
-#include "kd_tracer/kd_tracer.h"
+#include "experimental/kd_tracer.h"
 #include "optix_tracer/optix_tracer.h"
 namespace kd = gsrt::kd_tracer;
 namespace optix = gsrt::optix_tracer;

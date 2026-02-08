@@ -143,6 +143,17 @@ add_custom_command(
     COMMENT "Embedding PTX files"
 )
 
+if(DEFINED TRACER_EXPERIMENTAL)
+    set(tracer_exp_files 
+        src/experimental/kd_tracer.cpp
+        src/experimental/structure.cpp
+        src/experimental/host/builder.cpp
+        src/experimental/host/traverser.cpp
+        src/experimental/cuda/traverser.cu)
+else()
+    set(tracer_exp_files)
+endif()
+
 add_link_options(-flto=auto)  # disables some warning
 pybind11_add_module(gsrt_cpp_extension
     ${ptx_code_file}
@@ -150,11 +161,7 @@ pybind11_add_module(gsrt_cpp_extension
     src/optix_tracer/pipeline.cpp
     src/optix_tracer/optix_tracer.cpp
 
-    src/kd_tracer/kd_tracer.cpp
-    src/kd_tracer/structure.cpp
-    src/kd_tracer/host/builder.cpp
-    src/kd_tracer/host/traverser.cpp
-    src/kd_tracer/cuda/traverser.cu
+    ${tracer_exp_files}
 
     src/utils/primitives.cu
     src/py_binding.cpp
