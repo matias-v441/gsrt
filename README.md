@@ -1,6 +1,6 @@
 # Ray tracing 3D Gaussians
 
-This repository contains my Master’s thesis work on **ray tracing–based rendering of 3D Gaussians**, with a focus on re-examining the assumptions behind recent Gaussian splatting and ray tracing methods, and designing a custom ray tracing based pipeline. 
+This repository contains my Master’s [thesis](https://github.com/matias-v441/gsrt/tree/devel/thesis.pdf) on **ray tracing–based rendering of 3D Gaussians**, with a focus on re-examining the assumptions behind recent Gaussian splatting and ray tracing methods, and designing a custom ray tracing based pipeline. 
 
 ## Contents
 
@@ -10,7 +10,7 @@ This repository contains my Master’s thesis work on **ray tracing–based rend
   - Achieves slightly improved results compared to [3DGRUT](https://github.com/nv-tlabs/3dgrut)
 
 - **Wide-angle / distorted camera support**
-  - Patch for [FisheyeGS](https://github.com/zmliao/Fisheye-GS) in [here](https://github.com/matias-v441/gsrt/tree/devel/nbs-3dgs-fs)
+  - [FisheyeGS](https://github.com/zmliao/Fisheye-GS) in [here](https://github.com/matias-v441/Fisheye-GS)
   - Patch for [NerfBaselines](https://github.com/nerfbaselines/nerfbaselines) [here](https://github.com/matias-v441/gsrt/tree/devel/method/patch_cameras.py)
 
 The project is primarily intended as a **technical artifact** demonstrating algorithmic design, numerical considerations, and  trade-offs, rather than a polished end-user library.
